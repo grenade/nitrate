@@ -1,0 +1,110 @@
+# === Rust build artifacts ===
+/target/
+/Cargo.lock
+**/*.rs.bk
+
+# === IDEs and editors ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*.log
+*~
+tags
+*.ctags
+
+# === OS / user files ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Logs & runtime ===
+logs/
+*.log
+nohup.out
+tmp/
+*.pid
+*.seed
+*.cache
+.cache/
+core
+*.core
+
+# === CUDA / HIP / OpenCL artifacts ===
+# PTX, CUBIN, HSACO, and intermediate object files
+*.ptx
+*.cubin
+*.fatbin
+*.hsaco
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# nvcc / hipcc generated directories
+**/CMakeFiles/
+**/cmake-build-*/
+**/build/
+**/bin/
+**/out/
+**/_deps/
+
+# === Criterion benchmark output ===
+/target/criterion/
+/crates/*/target/criterion/
+/crates/nitrate-bench/target/
+
+# === Configuration / secrets ===
+miner.toml
+miner.local.toml
+*.env
+.env
+.env.*
+.envrc
+
+# === Systemd & Quadlet ===
+*.service
+*.container
+*.quadlet
+*.podman
+*.yaml
+*.yml
+
+# === Docs & generated artifacts ===
+/docs/generated/
+/docs/_build/
+/book/
+*.pdf
+*.zip
+*.tar.gz
+
+# === Binary outputs ===
+/bins/**/target/
+/bins/**/release/
+/bins/**/debug/
+/bins/**/build/
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+
+# === Temporary local scripts or test data ===
+scripts/local-*
+scripts/dev-*
+/scratch/
+/sandbox/
+/tmp/
+/__pycache__/
+
+# === Ignore user node_modules (if any JS tooling added later) ===
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock

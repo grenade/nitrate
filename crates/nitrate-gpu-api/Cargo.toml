@@ -1,0 +1,16 @@
+[package]
+name = "nitrate-gpu-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+cuda = []
+hip = []
+opencl = []
+dummy = []
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+thiserror = "1.0"

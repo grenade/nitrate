@@ -1,0 +1,18 @@
+[package]
+name = "nitrate-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["gpu-dummy"]
+gpu-dummy = ["nitrate-core/gpu-dummy"]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+nitrate-core = { path = "../../crates/nitrate-core", default-features = false }
+nitrate-config = { path = "../../crates/nitrate-config" }
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros"] }
