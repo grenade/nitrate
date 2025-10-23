@@ -34,7 +34,7 @@ unsafe impl cust::memory::DeviceCopy for DeviceCandidate {}
 ///
 /// - With `cuda` feature: performs CUDA driver init and basic device enumeration.
 /// - Without `cuda` feature: compiles a stub that returns errors on use.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CudaBackend {
     #[cfg(feature = "cuda")]
     _marker: std::marker::PhantomData<()>,
@@ -44,21 +44,6 @@ pub struct CudaBackend {
     gpu_configs: std::sync::Arc<std::sync::Mutex<Vec<GpuConfig>>>,
     #[cfg(feature = "cuda")]
     gpu_database: GpuDatabase,
-}
-
-impl Default for CudaBackend {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "cuda")]
-            _marker: std::marker::PhantomData,
-            #[cfg(feature = "cuda")]
-            last_candidates: std::sync::OnceLock::new(),
-            #[cfg(feature = "cuda")]
-            gpu_configs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            #[cfg(feature = "cuda")]
-            gpu_database: GpuDatabase::new(),
-        }
-    }
 }
 
 #[async_trait]

@@ -165,6 +165,12 @@ impl GpuDatabase {
     }
 }
 
+impl Default for GpuDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
