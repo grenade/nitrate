@@ -66,8 +66,50 @@ impl GpuBackend for CudaBackend {
             // total_memory() returns bytes; convert to MiB for display.
             let memory_mb = (dev.total_memory()? as u64) / (1024 * 1024);
 
+            // Query device properties to understand resource limits
+            let max_threads_per_block =
+                dev.get_attribute(cust::device::DeviceAttribute::MaxThreadsPerBlock)? as u32;
+            let max_threads_per_sm = dev
+                .get_attribute(cust::device::DeviceAttribute::MaxThreadsPerMultiprocessor)?
+                as u32;
+            // MaxBlocksPerMultiprocessor is not available in cust, use a reasonable default
+            let max_blocks_per_sm = 32u32; // Conservative default for modern GPUs
+            let sm_count =
+                dev.get_attribute(cust::device::DeviceAttribute::MultiprocessorCount)? as u32;
+            let max_shared_mem_per_block =
+                dev.get_attribute(cust::device::DeviceAttribute::MaxSharedMemoryPerBlock)? as u32;
+            let max_registers_per_block =
+                dev.get_attribute(cust::device::DeviceAttribute::MaxRegistersPerBlock)? as u32;
+
+            debug!(
+                "GPU {} device limits: max_threads_per_block={}, max_threads_per_sm={}, sm_count={}, max_shared_mem_per_block={}, max_registers_per_block={}",
+                ordinal,
+                max_threads_per_block,
+                max_threads_per_sm,
+                sm_count,
+                max_shared_mem_per_block,
+                max_registers_per_block
+            );
+
             // Get optimal configuration for this GPU
             let config = self.gpu_database.get_config(&name);
+
+            // Validate configuration against device limits
+            if config.block_size > max_threads_per_block {
+                warn!(
+                    "GPU {}: Configured block_size {} exceeds max_threads_per_block {}! Using {}",
+                    ordinal, config.block_size, max_threads_per_block, max_threads_per_block
+                );
+            }
+
+            let blocks_per_sm = config.grid_size.div_ceil(sm_count);
+            if blocks_per_sm > max_blocks_per_sm {
+                warn!(
+                    "GPU {}: Grid size {} results in {} blocks per SM, exceeding limit of {}!",
+                    ordinal, config.grid_size, blocks_per_sm, max_blocks_per_sm
+                );
+            }
+
             info!(
                 "GPU {}: {} ({} MiB) - using grid={}, block={}, nonces_per_thread={}, ring_capacity={}",
                 ordinal,

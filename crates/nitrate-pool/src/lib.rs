@@ -43,14 +43,22 @@ pub struct Share {
     pub nonce: u32,
 }
 
+// Type alias for pool connection components
+type PoolConnection = (
+    BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+    Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+);
+
 pub struct StratumClient {
     #[allow(dead_code)]
     cfg: PoolConfig,
+    #[allow(dead_code)]
     job_tx: mpsc::UnboundedSender<StratumJob>,
     job_rx: Option<mpsc::UnboundedReceiver<StratumJob>>,
-    share_tx: Option<mpsc::UnboundedSender<Share>>,
+    share_queue: Arc<tokio::sync::Mutex<Vec<Share>>>,
     #[allow(dead_code)]
     request_id: Arc<AtomicU64>,
+    connected: Arc<tokio::sync::RwLock<bool>>,
 }
 
 fn parse_notify(params: &[Value]) -> Result<MiningNotify> {
@@ -179,8 +187,9 @@ impl StratumClient {
         };
 
         let (job_tx, job_rx) = mpsc::unbounded_channel();
-        let (share_tx, share_rx) = mpsc::unbounded_channel();
         let request_id = Arc::new(AtomicU64::new(1));
+        let share_queue = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let connected = Arc::new(tokio::sync::RwLock::new(true));
 
         // Subscribe
         let sub_id = request_id.fetch_add(1, Ordering::Relaxed);
@@ -207,26 +216,36 @@ impl StratumClient {
         // Spawn protocol tasks
         let client = Self {
             cfg: cfg.clone(),
-            job_tx,
+            job_tx: job_tx.clone(),
             job_rx: Some(job_rx),
-            share_tx: Some(share_tx),
+            share_queue: share_queue.clone(),
             request_id: request_id.clone(),
+            connected: connected.clone(),
         };
 
-        // Spawn read loop
-        let job_tx_clone = client.job_tx.clone();
+        // Spawn connection manager that handles reconnection
+        let cfg_clone = cfg.clone();
+        let job_tx_clone = job_tx.clone();
+        let share_queue_clone = share_queue.clone();
         let request_id_clone = request_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) = Self::read_loop(reader, job_tx_clone, request_id_clone).await {
-                error!("read loop error: {}", e);
-            }
-        });
+        let connected_clone = connected.clone();
 
-        // Spawn write loop for share submissions
+        // Box the initial connection to match the expected types
+        let boxed_reader = BufReader::new(
+            Box::new(reader.into_inner()) as Box<dyn tokio::io::AsyncRead + Unpin + Send>
+        );
+        let boxed_writer = Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+
         tokio::spawn(async move {
-            if let Err(e) = Self::write_loop(write_half, share_rx).await {
-                error!("write loop error: {}", e);
-            }
+            Self::connection_manager(
+                cfg_clone,
+                job_tx_clone,
+                share_queue_clone,
+                request_id_clone,
+                connected_clone,
+                Some((boxed_reader, boxed_writer)),
+            )
+            .await;
         });
 
         Ok(client)
@@ -237,10 +256,182 @@ impl StratumClient {
     }
 
     pub async fn submit_share(&self, share: Share) -> Result<()> {
-        if let Some(ref tx) = self.share_tx {
-            tx.send(share)?;
+        // Queue the share for submission
+        let mut queue = self.share_queue.lock().await;
+        queue.push(share);
+
+        // If disconnected, shares will be submitted when connection is restored
+        if !*self.connected.read().await {
+            debug!("Share queued for submission when connection is restored");
         }
+
         Ok(())
+    }
+
+    async fn connection_manager(
+        cfg: PoolConfig,
+        job_tx: mpsc::UnboundedSender<StratumJob>,
+        share_queue: Arc<tokio::sync::Mutex<Vec<Share>>>,
+        request_id: Arc<AtomicU64>,
+        connected: Arc<tokio::sync::RwLock<bool>>,
+        mut initial_conn: Option<PoolConnection>,
+    ) {
+        let mut backoff_ms = 1000;
+        const MAX_BACKOFF_MS: u64 = 30000;
+
+        loop {
+            // Use initial connection if available, otherwise reconnect
+            let (reader, write_half) = if let Some(conn) = initial_conn.take() {
+                conn
+            } else {
+                // Mark as disconnected
+                *connected.write().await = false;
+
+                // Wait with exponential backoff
+                tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+
+                info!("Attempting to reconnect to pool at {}", cfg.url);
+
+                // Try to reconnect
+                match Self::establish_connection(&cfg).await {
+                    Ok(conn) => {
+                        info!("Successfully reconnected to pool");
+                        backoff_ms = 1000; // Reset backoff
+                        conn
+                    }
+                    Err(e) => {
+                        error!("Failed to reconnect: {}. Retrying in {}ms", e, backoff_ms);
+                        continue;
+                    }
+                }
+            };
+
+            // Mark as connected
+            *connected.write().await = true;
+
+            // Spawn read loop
+            let job_tx_clone = job_tx.clone();
+            let request_id_clone = request_id.clone();
+            let connected_clone = connected.clone();
+            let read_handle = tokio::spawn(async move {
+                let result = Self::read_loop(reader, job_tx_clone, request_id_clone).await;
+                *connected_clone.write().await = false;
+                result
+            });
+
+            // Spawn write loop with share queue
+            let share_queue_clone = share_queue.clone();
+            let connected_clone = connected.clone();
+            let write_handle = tokio::spawn(async move {
+                let result = Self::write_loop_with_queue(write_half, share_queue_clone).await;
+                *connected_clone.write().await = false;
+                result
+            });
+
+            // Wait for either task to complete (indicating disconnection)
+            tokio::select! {
+                result = read_handle => {
+                    match result {
+                        Ok(Ok(())) => info!("Read loop completed normally"),
+                        Ok(Err(e)) => error!("Read loop error: {}", e),
+                        Err(e) => error!("Read loop panic: {}", e),
+                    }
+                }
+                result = write_handle => {
+                    match result {
+                        Ok(Ok(())) => info!("Write loop completed normally"),
+                        Ok(Err(e)) => error!("Write loop error: {}", e),
+                        Err(e) => error!("Write loop panic: {}", e),
+                    }
+                }
+            }
+
+            warn!("Pool connection lost, will attempt reconnection");
+        }
+    }
+
+    async fn establish_connection(cfg: &PoolConfig) -> Result<PoolConnection> {
+        // Parse URL manually - expecting format like "stratum+tcp://host:port"
+        let url_str = &cfg.url;
+        let url_str = url_str
+            .strip_prefix("stratum+tcp://")
+            .or_else(|| url_str.strip_prefix("stratum+ssl://"))
+            .or_else(|| url_str.strip_prefix("stratum+tls://"))
+            .unwrap_or(url_str);
+
+        let (host, port) = if let Some(colon_idx) = url_str.rfind(':') {
+            let host = &url_str[..colon_idx];
+            let port_str = &url_str[colon_idx + 1..];
+            let port = port_str.parse::<u16>().unwrap_or(3333);
+            (host, port)
+        } else {
+            (url_str, 3333u16)
+        };
+
+        let stream = TcpStream::connect((host, port)).await?;
+
+        #[cfg(feature = "tls-rustls")]
+        let (reader, mut write_half): (
+            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        ) = {
+            if cfg.tls {
+                let connector = crate::tls::create_tls_connector(cfg.tls_insecure)?;
+                let server_name = ServerName::try_from(host.to_string())
+                    .map_err(|_| anyhow::anyhow!("invalid DNS name: {}", host))?;
+                let tls_stream = connector.connect(server_name, stream).await?;
+                let (read_half, write_half) = tokio::io::split(tls_stream);
+                (
+                    BufReader::new(
+                        Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>
+                    ),
+                    Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+                )
+            } else {
+                let (read_half, write_half) = stream.into_split();
+                (
+                    BufReader::new(
+                        Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>
+                    ),
+                    Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+                )
+            }
+        };
+
+        #[cfg(not(feature = "tls-rustls"))]
+        let (reader, mut write_half): (
+            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        ) = {
+            let (read_half, write_half) = stream.into_split();
+            (
+                BufReader::new(Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+            )
+        };
+
+        // Send subscribe message
+        let subscribe_msg = json!({
+            "id": 1,
+            "method": "mining.subscribe",
+            "params": ["nitrate/0.1.0"]
+        });
+        let frame = format!("{}\n", subscribe_msg);
+        write_half.write_all(frame.as_bytes()).await?;
+        write_half.flush().await?;
+
+        // Authorize
+        let authorize_msg = json!({
+            "id": 2,
+            "method": "mining.authorize",
+            "params": [&cfg.user, &cfg.pass]
+        });
+        let frame = format!("{}\n", authorize_msg);
+        write_half.write_all(frame.as_bytes()).await?;
+        write_half.flush().await?;
+
+        Ok((reader, write_half))
     }
 
     async fn read_loop(
@@ -328,38 +519,62 @@ impl StratumClient {
         Ok(())
     }
 
-    async fn write_loop(
+    async fn write_loop_with_queue(
         mut writer: impl tokio::io::AsyncWrite + Unpin,
-        mut share_rx: mpsc::UnboundedReceiver<Share>,
+        share_queue: Arc<tokio::sync::Mutex<Vec<Share>>>,
     ) -> Result<()> {
         let mut request_id = 100u64;
+        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
 
-        while let Some(share) = share_rx.recv().await {
-            request_id += 1;
+        loop {
+            check_interval.tick().await;
 
-            // Format extranonce2 and ntime as hex
-            let e2_hex = hex_encode(&share.extranonce2);
-            let ntime_hex = format!("{:08x}", share.ntime);
-            let nonce_hex = format!("{:08x}", share.nonce);
+            // Get shares from queue
+            let shares = {
+                let mut queue = share_queue.lock().await;
+                if queue.is_empty() {
+                    continue;
+                }
+                queue.drain(..).collect::<Vec<_>>()
+            };
 
-            let submit_msg = json!({
-                "id": request_id,
-                "method": "mining.submit",
-                "params": [
-                    "worker",  // worker name (often ignored)
-                    &share.job_id,
-                    &e2_hex,
-                    &ntime_hex,
-                    &nonce_hex
-                ]
-            });
+            // Submit each share
+            for share in shares {
+                request_id += 1;
 
-            let frame = format!("{}\n", submit_msg);
-            writer.write_all(frame.as_bytes()).await?;
-            writer.flush().await?;
-            debug!("submitted share for job {}", share.job_id);
+                // Format extranonce2 and ntime as hex
+                let e2_hex = hex_encode(&share.extranonce2);
+                let ntime_hex = format!("{:08x}", share.ntime);
+                let nonce_hex = format!("{:08x}", share.nonce);
+
+                let submit_msg = json!({
+                    "id": request_id,
+                    "method": "mining.submit",
+                    "params": [
+                        "worker",  // worker name (often ignored)
+                        &share.job_id,
+                        &e2_hex,
+                        &ntime_hex,
+                        &nonce_hex
+                    ]
+                });
+
+                let frame = format!("{}\n", submit_msg);
+                if let Err(e) = writer.write_all(frame.as_bytes()).await {
+                    // Put share back in queue for retry
+                    share_queue.lock().await.insert(0, share);
+                    return Err(anyhow::anyhow!("Failed to write share: {}", e));
+                }
+                if let Err(e) = writer.flush().await {
+                    // Put share back in queue for retry
+                    share_queue.lock().await.insert(0, share);
+                    return Err(anyhow::anyhow!("Failed to flush: {}", e));
+                }
+                info!(
+                    "submitted share (nonce={:08x}) for job {}",
+                    share.nonce, share.job_id
+                );
+            }
         }
-
-        Ok(())
     }
 }
