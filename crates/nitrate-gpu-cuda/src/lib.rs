@@ -158,12 +158,12 @@ impl GpuBackend for CudaBackend {
             config.ring_capacity
         );
 
-        // Load PTX for the "sha256d" module generated at build time and get the kernel.
-        let ptx_bytes = nitrate_cuda_ptx::get_ptx_by_name("sha256d")
-            .ok_or_else(|| anyhow::anyhow!("no PTX embedded for 'sha256d'"))?;
-        let ptx_str =
-            std::str::from_utf8(ptx_bytes).map_err(|_| anyhow::anyhow!("PTX not valid UTF-8"))?;
-        let module = Module::from_ptx(ptx_str, &[])?;
+        // Load fatbin for the "sha256d" module generated at build time and get the kernel.
+        // The fatbin contains compiled code for multiple GPU architectures
+        let fatbin_bytes = nitrate_cuda_ptx::get_ptx_by_name("sha256d")
+            .ok_or_else(|| anyhow::anyhow!("no fatbin embedded for 'sha256d'"))?;
+        // Load the fatbin directly - CUDA runtime will select the best architecture
+        let module = Module::from_fatbin(fatbin_bytes, &[])?;
         let func = module.get_function("sha256d_scan_kernel")?;
 
         // Set up stream and grid using GPU-specific configuration

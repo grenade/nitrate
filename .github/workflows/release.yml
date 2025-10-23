@@ -145,6 +145,19 @@ jobs:
           export PATH="$CUDA_PATH/bin:$PATH"
           export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$LD_LIBRARY_PATH"
 
+          # Build with multi-architecture fatbin for broad GPU support
+          # The fatbin includes optimized code for:
+          # - sm_75: Turing (RTX 2000, GTX 1600 series)
+          # - sm_80: Ampere (A100, A30, A40)
+          # - sm_86: Ampere (RTX 3000 series)
+          # - sm_87: Ampere (Jetson AGX Orin)
+          # - sm_89: Ada Lovelace (RTX 4000 series)
+          # - sm_90: Hopper (H100, H200)
+          # - sm_120: Blackwell (RTX 5090 series) with PTX for forward compatibility
+          # CUDA 13 minimum supported architecture is sm_75
+
+          echo "Building multi-architecture fatbin for GPUs from Turing to Blackwell"
+
           # Build with CUDA feature enabled
           cargo build --release -p nitrate-cli --features gpu-cuda
 
@@ -225,8 +238,19 @@ jobs:
 
           ### Requirements
           - Linux x86_64
-          - NVIDIA GPU with CUDA support
-          - CUDA driver compatible with CUDA 13.0
+          - NVIDIA GPU (GTX 1600 series or newer)
+          - NVIDIA driver 525 or newer (CUDA 13.0 compatible)
+
+          ### Supported GPUs
+          This release includes optimized code for:
+          - GTX 1600 / RTX 2000 series (Turing - sm_75)
+          - RTX 3000 series (Ampere - sm_86/87)
+          - RTX 4000 series (Ada Lovelace - sm_89)
+          - RTX 5090 series (Blackwell - sm_120)
+          - H100/H200 (Hopper - sm_90)
+          - Future GPU architectures via JIT compilation
+
+          The binary automatically selects the best code path for your GPU.
 
           ### Quick Start
           \`\`\`bash

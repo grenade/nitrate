@@ -63,8 +63,7 @@ core
 
 # === Configuration / secrets ===
 beast.toml
-miner.toml
-miner.local.toml
+quadbrat.toml
 *.env
 .env
 .env.*

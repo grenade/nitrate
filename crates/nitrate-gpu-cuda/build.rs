@@ -1,19 +1,23 @@
 /*! @build
-Compile CUDA .cu sources into PTX at build time and generate a Rust source
-file that embeds the resulting PTX blobs via include_bytes!.
+Compile CUDA .cu sources into a fatbin containing multiple GPU architectures.
+
+This build script generates a fat binary that includes compiled code for multiple
+GPU architectures, ensuring compatibility across a wide range of NVIDIA GPUs from
+Turing to Blackwell and beyond.
 
 Behavior:
 - Only runs when the crate feature `cuda` is enabled (Cargo sets CARGO_FEATURE_CUDA).
 - Searches `kernels/` for `*.cu` files.
-- Invokes NVCC to produce `.ptx` files into OUT_DIR.
-- Generates `${OUT_DIR}/kernel_ptx.rs` with a static map of (name -> PTX bytes).
+- Invokes NVCC to produce a fatbin with multiple architectures.
+- Generates `${OUT_DIR}/kernel_ptx.rs` embedding the fatbin.
 
 Configuration (optional):
 - NVCC: set env NVCC to override the NVCC executable path. Otherwise tries:
   - $CUDA_HOME/bin/nvcc
   - $CUDA_PATH/bin/nvcc
   - "nvcc" (requires it to be in PATH)
-- CUDA_ARCH: set to e.g. "sm_86" or "sm_75". Defaults to "sm_52".
+- CUDA_ARCH: Comma-separated list of architectures (e.g., "sm_75,sm_86,sm_89").
+  If not set, builds for all major architectures from Turing to Blackwell.
 */
 
 use std::env;
@@ -116,8 +120,16 @@ fn main() {
         }
     }
 
-    // Select architecture (default reasonable baseline)
-    let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_52".to_string());
+    // Get target architectures
+    let architectures = get_target_architectures();
+    eprintln!(
+        "cargo:warning=Building CUDA fatbin for architectures: {}",
+        architectures
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let mut generated_entries: Vec<(String, String)> = Vec::new();
@@ -129,27 +141,44 @@ fn main() {
             .unwrap_or("kernel")
             .to_string();
 
-        let ptx_out = out_dir.join(format!("{name}.ptx"));
+        // Use .fatbin extension for fat binaries
+        let fatbin_out = out_dir.join(format!("{name}.fatbin"));
 
-        // Compile .cu -> .ptx
-        let status = Command::new(&nvcc)
-            .arg("-ptx")
-            .arg("-arch")
-            .arg(&cuda_arch)
-            .arg("-o")
-            .arg(&ptx_out)
-            .arg(&cu)
-            .status();
+        // Build nvcc arguments for fatbin generation
+        let mut nvcc_args = vec![
+            // Generate fatbin containing multiple architectures
+            "-fatbin".to_string(),
+            // Optimize for speed
+            "-O3".to_string(),
+            // Use fast math
+            "--use_fast_math".to_string(),
+            // Output file
+            "-o".to_string(),
+            fatbin_out.to_string_lossy().to_string(),
+        ];
+
+        // Add gencode flags for each architecture
+        for arch in &architectures {
+            nvcc_args.push("-gencode".to_string());
+            nvcc_args.push(arch.to_gencode_string());
+        }
+
+        // Add the source file
+        nvcc_args.push(cu.to_string_lossy().to_string());
+
+        // Compile the kernel
+        let status = Command::new(&nvcc).args(&nvcc_args).status();
 
         match status {
             Ok(st) if st.success() => {
                 println!(
-                    "cargo:warning=nvcc compiled {} -> {}",
+                    "cargo:warning=nvcc compiled {} -> {} (fatbin with {} architectures)",
                     cu.display(),
-                    ptx_out.display()
+                    fatbin_out.display(),
+                    architectures.len()
                 );
                 println!("cargo:rerun-if-changed={}", cu.display());
-                generated_entries.push((name, ptx_out.to_string_lossy().to_string()));
+                generated_entries.push((name, fatbin_out.to_string_lossy().to_string()));
             }
             Ok(st) => {
                 eprintln!(
@@ -158,6 +187,7 @@ fn main() {
                     cu.display(),
                     nvcc.display()
                 );
+                eprintln!("cargo:warning=nvcc arguments: {:?}", nvcc_args);
             }
             Err(err) => {
                 eprintln!(
@@ -169,9 +199,119 @@ fn main() {
         }
     }
 
-    // Generate the Rust source that embeds the PTX blobs (or stub if none succeeded)
+    // Generate the Rust source that embeds the fatbin blobs (or stub if none succeeded)
     if let Err(e) = write_generated(&out_dir, &generated_entries) {
         eprintln!("cargo:warning=failed to write generated kernel_ptx.rs: {e}");
+    }
+}
+
+/// Represents a CUDA architecture target
+#[derive(Clone, Debug)]
+struct CudaArch {
+    /// Virtual architecture (compute capability), e.g., 75, 86, 120
+    compute: u32,
+    /// Real architectures to compile for (can be multiple for same compute)
+    real_archs: Vec<u32>,
+    /// Whether to include PTX for JIT compilation
+    include_ptx: bool,
+}
+
+impl std::fmt::Display for CudaArch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.include_ptx {
+            write!(f, "sm_{}/compute_{}", self.real_archs[0], self.compute)
+        } else {
+            write!(f, "sm_{}", self.real_archs[0])
+        }
+    }
+}
+
+impl CudaArch {
+    fn new(compute: u32, real_archs: Vec<u32>, include_ptx: bool) -> Self {
+        Self {
+            compute,
+            real_archs,
+            include_ptx,
+        }
+    }
+
+    fn to_gencode_string(&self) -> String {
+        let mut codes = Vec::new();
+
+        // Add all real architectures (CUBIN)
+        for real in &self.real_archs {
+            codes.push(format!("sm_{}", real));
+        }
+
+        // Add PTX for JIT if requested
+        if self.include_ptx {
+            codes.push(format!("compute_{}", self.compute));
+        }
+
+        format!("arch=compute_{},code=[{}]", self.compute, codes.join(","))
+    }
+}
+
+fn get_target_architectures() -> Vec<CudaArch> {
+    // Check if CUDA_ARCH is set (comma-separated list)
+    if let Ok(arch_str) = env::var("CUDA_ARCH") {
+        let archs: Vec<String> = arch_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if !archs.is_empty() {
+            return parse_user_architectures(&archs);
+        }
+    }
+
+    // Default: comprehensive architecture support for production
+    // CUDA 13 minimum supported architecture is sm_75
+    vec![
+        // Turing (RTX 2000, GTX 1600 series)
+        CudaArch::new(75, vec![75], false),
+        // Ampere (A100, A30, A40, A10)
+        CudaArch::new(80, vec![80], false),
+        // Ampere (RTX 3000 consumer series)
+        CudaArch::new(86, vec![86], false),
+        // Ampere (Jetson AGX Orin, A2)
+        CudaArch::new(87, vec![87], false),
+        // Ada Lovelace (RTX 4000 series, L4, L40)
+        CudaArch::new(89, vec![89], false),
+        // Hopper (H100, H200)
+        CudaArch::new(90, vec![90], false),
+        // Blackwell (RTX 5090, B100, B200) with PTX for forward compatibility
+        // Include PTX so future architectures can JIT compile
+        CudaArch::new(120, vec![120], true),
+    ]
+}
+
+fn parse_user_architectures(archs: &[String]) -> Vec<CudaArch> {
+    let mut result = Vec::new();
+
+    for arch_str in archs {
+        if let Some(suffix) = arch_str.strip_prefix("sm_") {
+            // Real architecture specified
+            if let Ok(num) = suffix.parse::<u32>() {
+                // For user-specified architectures, don't add PTX unless it's the last one
+                let include_ptx = arch_str == archs.last().unwrap();
+                result.push(CudaArch::new(num, vec![num], include_ptx));
+            }
+        } else if let Some(suffix) = arch_str.strip_prefix("compute_") {
+            // Virtual architecture specified - only PTX
+            if let Ok(num) = suffix.parse::<u32>() {
+                result.push(CudaArch::new(num, vec![], true));
+            }
+        }
+    }
+
+    if result.is_empty() {
+        // Fallback to default if parsing failed
+        eprintln!("cargo:warning=Failed to parse CUDA_ARCH, using defaults");
+        get_target_architectures()
+    } else {
+        result
     }
 }
 
@@ -226,6 +366,7 @@ fn write_generated(out_dir: &Path, entries: &[(String, String)]) -> Result<(), s
     writeln!(f, "// @generated by build.rs - DO NOT EDIT")?;
     writeln!(f, "#[allow(dead_code)]")?;
     writeln!(f, "pub mod nitrate_cuda_ptx {{")?;
+
     // Expose a list of available kernel names
     write!(f, "    pub const NAMES: &[&str] = &[")?;
     for (i, (name, _)) in entries.iter().enumerate() {
@@ -236,14 +377,15 @@ fn write_generated(out_dir: &Path, entries: &[(String, String)]) -> Result<(), s
     }
     writeln!(f, "];")?;
 
-    // For each entry, expose a const with the PTX bytes
-    for (name, ptx_path) in entries {
-        // Use include_bytes! with OUT_DIR path; this binds the PTX at compile time.
+    // For each entry, expose a const with the fatbin bytes
+    for (name, fatbin_path) in entries {
+        // Use include_bytes! with OUT_DIR path; this binds the fatbin at compile time.
+        // Note: We're calling this PTX for compatibility but it's actually a fatbin
         writeln!(
             f,
             "    pub const {}_PTX: &'static [u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{}\"));",
             ident(name),
-            escape_path_for_include(ptx_path, out_dir)
+            escape_path_for_include(fatbin_path, out_dir)
         )?;
     }
 
@@ -288,9 +430,9 @@ fn ident(name: &str) -> String {
 
 // For include_bytes!(concat!(env!("OUT_DIR"), "/...")), we only need the file name component.
 // Ensure we reference the file as it will exist in OUT_DIR (strip directories).
-fn escape_path_for_include(ptx_path: &str, out_dir: &Path) -> String {
-    // If ptx_path is already inside OUT_DIR, just use the file name.
-    let p = Path::new(ptx_path);
+fn escape_path_for_include(fatbin_path: &str, out_dir: &Path) -> String {
+    // If fatbin_path is already inside OUT_DIR, just use the file name.
+    let p = Path::new(fatbin_path);
     if let Some(fname) = p.file_name().and_then(OsStr::to_str) {
         return fname.to_string();
     }
@@ -301,7 +443,7 @@ fn escape_path_for_include(ptx_path: &str, out_dir: &Path) -> String {
         }
     }
     // Last resort: normalize separators.
-    ptx_path.replace('\\', "/")
+    fatbin_path.replace('\\', "/")
 }
 
 // Minimal pathdiff (avoid adding a build-dependency): simplistic diff for common OUT_DIR usage.
