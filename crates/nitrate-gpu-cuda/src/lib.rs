@@ -1,14 +1,16 @@
 #![doc = "CUDA backend scaffold for Nitrate GPU miner.\n\nThis crate provides a feature-gated CUDA backend implementation of the `GpuBackend`\ntrait. When built with the `cuda` feature, it initializes the CUDA driver using\n`cust` and performs basic device enumeration. `launch` and `poll_results` are\nimplemented as stubs for now, to be filled in with a real SHA256d midstate-based\nkernel and a device-side result ring.\n\nWhen the `cuda` feature is NOT enabled, the same `CudaBackend` type is exposed,\nbut all trait methods return clear errors to indicate the backend is unavailable.\nThis keeps the crate buildable in the workspace without requiring CUDA.\n"]
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
 use anyhow::bail;
 use anyhow::Result;
 use async_trait::async_trait;
 use nitrate_gpu_api::{DeviceInfo, FoundNonce, GpuBackend, KernelWork};
-#[cfg(not(feature = "cuda"))]
+#[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
+use tracing::debug;
+#[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
 use tracing::warn;
 #[cfg(feature = "cuda")]
 use tracing::{debug, info};
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "cuda-stub"))]
 include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 
 #[cfg(feature = "cuda")]
@@ -63,9 +65,20 @@ impl GpuBackend for CudaBackend {
         Ok(out)
     }
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(feature = "cuda-stub")]
     async fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
-        warn!("CudaBackend requested but built without `cuda` feature");
+        debug!("CudaBackend running in stub mode (cuda-stub feature)");
+        // Return a fake GPU for testing
+        Ok(vec![DeviceInfo {
+            index: 0,
+            name: "CUDA Stub GPU".into(),
+            memory_mb: 8192,
+        }])
+    }
+
+    #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
+    async fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+        warn!("CudaBackend requested but built without `cuda` or `cuda-stub` features");
         Ok(vec![])
     }
 
@@ -166,10 +179,22 @@ impl GpuBackend for CudaBackend {
         Ok(())
     }
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(feature = "cuda-stub")]
+    async fn launch(&self, device_index: u32, work: KernelWork) -> Result<()> {
+        debug!(
+            device_index,
+            generation = work.generation,
+            start = work.start_nonce,
+            count = work.nonce_count,
+            "CUDA stub launch (no-op)"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
     async fn launch(&self, device_index: u32, _work: KernelWork) -> Result<()> {
         let _ = device_index; // silence unused warning
-        bail!("CudaBackend::launch called but crate built without `cuda` feature");
+        bail!("CudaBackend::launch called but crate built without `cuda` or `cuda-stub` features");
     }
 
     #[cfg(feature = "cuda")]
@@ -189,9 +214,15 @@ impl GpuBackend for CudaBackend {
         Ok(Vec::new())
     }
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(feature = "cuda-stub")]
+    async fn poll_results(&self, _device_index: u32) -> Result<Vec<FoundNonce>> {
+        // Stub returns no results
+        Ok(vec![])
+    }
+
+    #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
     async fn poll_results(&self, device_index: u32) -> Result<Vec<FoundNonce>> {
         let _ = device_index; // silence unused warning
-        bail!("CudaBackend::poll_results called but crate built without `cuda` feature");
+        bail!("CudaBackend::poll_results called but crate built without `cuda` or `cuda-stub` features");
     }
 }

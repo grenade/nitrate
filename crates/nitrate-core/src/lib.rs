@@ -12,9 +12,13 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "gpu-cuda")]
+#[cfg(any(feature = "gpu-cuda", feature = "gpu-cuda-stub"))]
 use nitrate_gpu_cuda::CudaBackend as SelectedBackend;
-#[cfg(all(feature = "gpu-dummy", not(feature = "gpu-cuda")))]
+#[cfg(all(
+    feature = "gpu-dummy",
+    not(feature = "gpu-cuda"),
+    not(feature = "gpu-cuda-stub")
+))]
 use nitrate_gpu_dummy::DummyBackend as SelectedBackend;
 
 pub struct Engine<B: GpuBackend + Default> {

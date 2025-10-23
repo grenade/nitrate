@@ -29,8 +29,19 @@ fn main() {
 
     // Only do CUDA work when the `cuda` feature is enabled on this crate.
     let cuda_feature = env::var_os("CARGO_FEATURE_CUDA").is_some();
-    if !cuda_feature {
+    let cuda_stub_feature = env::var_os("CARGO_FEATURE_CUDA_STUB").is_some();
+
+    if !cuda_feature && !cuda_stub_feature {
         // Still emit a stub generated file so downstream include! doesn't fail if used.
+        if let Err(e) = write_stub_generated() {
+            eprintln!("cargo:warning=failed to write stub kernel_ptx.rs: {e}");
+        }
+        return;
+    }
+
+    // For cuda-stub feature, just generate stubs without needing CUDA
+    if cuda_stub_feature && !cuda_feature {
+        eprintln!("cargo:warning=Building with cuda-stub feature; generating stub PTX");
         if let Err(e) = write_stub_generated() {
             eprintln!("cargo:warning=failed to write stub kernel_ptx.rs: {e}");
         }

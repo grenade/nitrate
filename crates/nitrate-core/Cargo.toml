@@ -22,3 +22,4 @@ thiserror = "1.0"
 default = ["gpu-dummy"]
 gpu-dummy = ["dep:nitrate-gpu-dummy"]
 gpu-cuda = ["dep:nitrate-gpu-cuda", "nitrate-gpu-cuda/cuda"]
+gpu-cuda-stub = ["dep:nitrate-gpu-cuda", "nitrate-gpu-cuda/cuda-stub"]

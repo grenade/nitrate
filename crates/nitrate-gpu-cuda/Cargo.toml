@@ -14,6 +14,7 @@ path = "src/lib.rs"
 # Upstream crates (e.g., nitrate-core, nitrate-cli) should gate inclusion of this crate behind their own features.
 default = []
 cuda = ["dep:cust"]
+cuda-stub = []  # For CI/checks without CUDA - provides stubs without requiring cust
 
 [dependencies]
 anyhow = "1.0"
