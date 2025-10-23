@@ -1,8 +1,8 @@
 use anyhow::Result;
 use nitrate_config::AppCfg;
-use nitrate_gpu_api::{GpuBackend};
-use nitrate_pool::{StratumClient, PoolConfig};
+use nitrate_gpu_api::GpuBackend;
 use nitrate_metrics::Metrics;
+use nitrate_pool::{PoolConfig, StratumClient};
 use std::net::SocketAddr;
 use tokio::signal;
 use tracing::{info, warn};
@@ -23,10 +23,16 @@ impl<B: GpuBackend + Default> Engine<B> {
             url: cfg.pool.url.clone(),
             user: cfg.pool.user.clone(),
             pass: cfg.pool.pass.clone(),
-        }).await?;
+        })
+        .await?;
 
         let metrics = Metrics::new();
-        Ok(Self { cfg, pool, backend: B::default(), metrics })
+        Ok(Self {
+            cfg,
+            pool,
+            backend: B::default(),
+            metrics,
+        })
     }
 
     pub async fn run(mut self) -> Result<()> {

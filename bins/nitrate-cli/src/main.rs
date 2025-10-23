@@ -30,8 +30,13 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let filter = cli.log.or_else(|| std::env::var("RUST_LOG").ok()).unwrap_or_else(|| "info".into());
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::new(filter)).init();
+    let filter = cli
+        .log
+        .or_else(|| std::env::var("RUST_LOG").ok())
+        .unwrap_or_else(|| "info".into());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(filter))
+        .init();
 
     match cli.cmd.unwrap_or(Cmd::Run) {
         Cmd::Run => {
