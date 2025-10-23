@@ -210,13 +210,21 @@ pub fn nbits_to_target_be(nbits: u32) -> [u8; 32] {
         tgt[29] = ((val >> 16) & 0xff) as u8;
         tgt[30] = ((val >> 8) & 0xff) as u8;
         tgt[31] = (val & 0xff) as u8;
-    } else {
+    } else if e < 32 {
         // Place the 3-byte mantissa starting at (32 - e) for big-endian representation.
         let offset = 32 - e;
-        tgt[offset] = ((m >> 16) & 0xff) as u8;
-        tgt[offset + 1] = ((m >> 8) & 0xff) as u8;
-        tgt[offset + 2] = (m & 0xff) as u8;
+        if offset < 30 {
+            // Ensure we have room for 3 bytes
+            tgt[offset] = ((m >> 16) & 0xff) as u8;
+            if offset + 1 < 32 {
+                tgt[offset + 1] = ((m >> 8) & 0xff) as u8;
+            }
+            if offset + 2 < 32 {
+                tgt[offset + 2] = (m & 0xff) as u8;
+            }
+        }
     }
+    // else: exponent too large, target stays all zeros (impossible difficulty)
 
     tgt
 }

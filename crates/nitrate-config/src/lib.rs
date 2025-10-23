@@ -41,6 +41,10 @@ pub struct RuntimeCfg {
     pub telemetry_addr: String,
     #[serde(default)]
     pub log: Option<String>,
+    #[serde(default)]
+    pub test_mode: bool, // Enable artificially easy difficulty for testing
+    #[serde(default = "default_test_difficulty")]
+    pub test_difficulty: f64, // Override difficulty in test mode
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -67,6 +71,9 @@ fn default_stale_ms() -> u64 {
 }
 fn default_telemetry() -> String {
     "0.0.0.0:9100".into()
+}
+fn default_test_difficulty() -> f64 {
+    0.00001 // Very easy difficulty for testing
 }
 
 pub fn load_from_path(path: &str) -> Result<AppCfg, ConfigError> {

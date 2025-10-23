@@ -10,6 +10,7 @@ async-trait = "0.1"
 tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "time", "signal"] }
 tracing = "0.1"
 nitrate-gpu-api = { path = "../nitrate-gpu-api" }
+nitrate-btc = { path = "../nitrate-btc" }
 nitrate-gpu-dummy = { path = "../nitrate-gpu-dummy", optional = true }
 nitrate-pool = { path = "../nitrate-pool" }
 nitrate-metrics = { path = "../nitrate-metrics" }
