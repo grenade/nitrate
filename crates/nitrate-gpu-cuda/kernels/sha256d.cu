@@ -29,7 +29,7 @@ void hello_kernel(uint32_t* __restrict__ out, uint32_t len, uint32_t seed) {
 
 #include <stddef.h>
 
-// SHA-256 constants
+// SHA-256 constants in constant memory for initialization
 __device__ __constant__ uint32_t SHA256_K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
     0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
@@ -41,8 +41,12 @@ __device__ __constant__ uint32_t SHA256_K[64] = {
     0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
+// Declare shared memory for K constants
+__shared__ uint32_t K_shared[64];
+
 __device__ __forceinline__ uint32_t rotr32(uint32_t x, uint32_t n) {
-    return (x >> n) | (x << (32u - n));
+    // Use CUDA intrinsic for faster rotation
+    return __funnelshift_r(x, x, n);
 }
 __device__ __forceinline__ uint32_t Ch(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) ^ (~x & z);
@@ -72,7 +76,7 @@ __device__ __forceinline__ uint32_t load_be32(const uint8_t* p) {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
 
-__device__ void sha256_compress(uint32_t st[8], const uint8_t block[64]) {
+__device__ __forceinline__ void sha256_compress(uint32_t st[8], const uint8_t block[64]) {
     uint32_t w[64];
     #pragma unroll
     for (int i = 0; i < 16; ++i) {
@@ -88,7 +92,7 @@ __device__ void sha256_compress(uint32_t st[8], const uint8_t block[64]) {
 
     #pragma unroll
     for (int i = 0; i < 64; ++i) {
-        uint32_t t1 = h + Sig1(e) + Ch(e, f, g) + SHA256_K[i] + w[i];
+        uint32_t t1 = h + Sig1(e) + Ch(e, f, g) + K_shared[i] + w[i];
         uint32_t t2 = Sig0(a) + Maj(a, b, c);
         h = g; g = f; f = e;
         e = d + t1;
@@ -122,7 +126,7 @@ typedef struct {
     unsigned long long generation;
 } Candidate;
 
-// Kernel: scan nonces using provided midstate and header tail, write candidates into a ring buffer
+// Optimized kernel: scan nonces using provided midstate and header tail, write candidates into a ring buffer
 extern "C" __global__
 void sha256d_scan_kernel(
     const uint32_t* __restrict__ midstate_be8,  // 8 words, big-endian SHA-256 state
@@ -135,11 +139,26 @@ void sha256d_scan_kernel(
     unsigned int* __restrict__ ring_write_idx,
     Candidate* __restrict__ ring_out
 ) {
+    // Load SHA256 K constants into shared memory cooperatively
+    if (threadIdx.x < 64) {
+        K_shared[threadIdx.x] = SHA256_K[threadIdx.x];
+    }
+    __syncthreads();
+    
     const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t stride = gridDim.x * blockDim.x;
-
-    for (uint64_t i = gid; i < (uint64_t)nonce_count; i += stride) {
-        const uint32_t nonce = start_nonce + (uint32_t)i;
+    
+    // Process 4 nonces per thread for better throughput
+    const uint32_t NONCES_PER_THREAD = 4;
+    
+    for (uint64_t base_i = gid * NONCES_PER_THREAD; base_i < (uint64_t)nonce_count; base_i += stride * NONCES_PER_THREAD) {
+        
+        #pragma unroll
+        for (uint32_t j = 0; j < NONCES_PER_THREAD; j++) {
+            uint64_t i = base_i + j;
+            if (i >= (uint64_t)nonce_count) break;
+            
+            const uint32_t nonce = start_nonce + (uint32_t)i;
 
         // Build second 64-byte block for first SHA-256 (header bytes 64..79 + padding)
         uint8_t blk2[64];
@@ -209,6 +228,7 @@ void sha256d_scan_kernel(
             for (int k = 0; k < 32; ++k) c.hash_be[k] = h2[k];
             c.generation = generation;
             ring_out[slot] = c;
+            }
         }
     }
 }

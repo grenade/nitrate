@@ -142,24 +142,32 @@ impl<B: GpuBackend + Default> Engine<B> {
                 let share_target = self.difficulty_to_target(effective_difficulty);
 
                 // Create GPU work
-                let work = KernelWork {
-                    generation: self.generation,
-                    start_nonce: 0,
-                    nonce_count: 100_000_000, // scan 100M nonces
-                    target_be: share_target,
-                    header_tail: prepared.tail16,
-                    midstate: prepared.midstate,
-                };
+                // Use much larger nonce range for better GPU utilization
+                let total_nonces = 2_000_000_000u32; // 2 billion nonces
+                let num_devices = self.cfg.gpu.devices.len() as u32;
+                let nonces_per_device = total_nonces / num_devices.max(1);
 
-                // Launch on device 0
-                if let Err(e) = self.backend.launch(0, work.clone()).await {
-                    debug!("launch error: {}", e);
-                } else {
-                    self.metrics.gpu_launches.inc();
+                // Launch work on all configured devices
+                for (idx, &device_id) in self.cfg.gpu.devices.iter().enumerate() {
+                    let work = KernelWork {
+                        generation: self.generation,
+                        start_nonce: (idx as u32) * nonces_per_device,
+                        nonce_count: nonces_per_device,
+                        target_be: share_target,
+                        header_tail: prepared.tail16,
+                        midstate: prepared.midstate,
+                    };
+
+                    // Launch on this device
+                    if let Err(e) = self.backend.launch(device_id, work.clone()).await {
+                        debug!("launch error on device {}: {}", device_id, e);
+                    } else {
+                        self.metrics.gpu_launches.inc();
+                    }
+
+                    // Track hashes for hashrate calculation
+                    self.total_hashes += work.nonce_count as u64;
                 }
-
-                // Track hashes for hashrate calculation
-                self.total_hashes += work.nonce_count as u64;
 
                 // Update hashrate every second
                 let now = std::time::Instant::now();
@@ -173,41 +181,50 @@ impl<B: GpuBackend + Default> Engine<B> {
                     self.total_hashes = 0;
                 }
 
-                // Poll for results
-                let results = self.backend.poll_results(0).await?;
-                self.metrics.candidates_found.inc_by(results.len() as u64);
-                for candidate in results {
-                    // Build full header with found nonce
-                    let mut header80 = prepared.header80;
-                    header80[76..80].copy_from_slice(&candidate.nonce.to_le_bytes());
+                // Poll for results from all devices
+                for &device_id in &self.cfg.gpu.devices {
+                    let results = match self.backend.poll_results(device_id).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            debug!("Failed to poll device {}: {}", device_id, e);
+                            continue;
+                        }
+                    };
 
-                    // Verify on CPU
-                    let hash = double_sha256_via_midstate(&header80);
+                    self.metrics.candidates_found.inc_by(results.len() as u64);
+                    for candidate in results {
+                        // Build full header with found nonce
+                        let mut header80 = prepared.header80;
+                        header80[76..80].copy_from_slice(&candidate.nonce.to_le_bytes());
 
-                    // Check against share target
-                    if self.hash_meets_target(&hash, &share_target) {
-                        info!("share found! nonce={:08x} hash={:?}", candidate.nonce, hash);
+                        // Verify on CPU
+                        let hash = double_sha256_via_midstate(&header80);
 
-                        // Extract ntime from header
-                        let ntime = u32::from_le_bytes([
-                            header80[68],
-                            header80[69],
-                            header80[70],
-                            header80[71],
-                        ]);
+                        // Check against share target
+                        if self.hash_meets_target(&hash, &share_target) {
+                            info!("share found! nonce={:08x} hash={:?}", candidate.nonce, hash);
 
-                        // Submit share
-                        let share = Share {
-                            job_id: job.job_id.clone(),
-                            extranonce2: extranonce2.clone(),
-                            ntime,
-                            nonce: candidate.nonce,
-                        };
+                            // Extract ntime from header
+                            let ntime = u32::from_le_bytes([
+                                header80[68],
+                                header80[69],
+                                header80[70],
+                                header80[71],
+                            ]);
 
-                        if let Err(e) = self.pool.submit_share(share).await {
-                            warn!("failed to submit share: {}", e);
-                        } else {
-                            self.metrics.shares_ok.inc();
+                            // Submit share
+                            let share = Share {
+                                job_id: job.job_id.clone(),
+                                extranonce2: extranonce2.clone(),
+                                ntime,
+                                nonce: candidate.nonce,
+                            };
+
+                            if let Err(e) = self.pool.submit_share(share).await {
+                                warn!("failed to submit share: {}", e);
+                            } else {
+                                self.metrics.shares_ok.inc();
+                            }
                         }
                     }
                 }

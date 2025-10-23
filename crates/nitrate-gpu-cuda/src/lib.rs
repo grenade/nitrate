@@ -14,6 +14,11 @@ use tracing::{debug, info};
 include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 
 #[cfg(feature = "cuda")]
+mod gpu_config;
+#[cfg(feature = "cuda")]
+use gpu_config::{GpuConfig, GpuDatabase};
+
+#[cfg(feature = "cuda")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct DeviceCandidate {
@@ -29,12 +34,31 @@ unsafe impl cust::memory::DeviceCopy for DeviceCandidate {}
 ///
 /// - With `cuda` feature: performs CUDA driver init and basic device enumeration.
 /// - Without `cuda` feature: compiles a stub that returns errors on use.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct CudaBackend {
     #[cfg(feature = "cuda")]
     _marker: std::marker::PhantomData<()>,
     #[cfg(feature = "cuda")]
     last_candidates: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<FoundNonce>>>>,
+    #[cfg(feature = "cuda")]
+    gpu_configs: std::sync::Arc<std::sync::Mutex<Vec<GpuConfig>>>,
+    #[cfg(feature = "cuda")]
+    gpu_database: GpuDatabase,
+}
+
+impl Default for CudaBackend {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "cuda")]
+            _marker: std::marker::PhantomData,
+            #[cfg(feature = "cuda")]
+            last_candidates: std::sync::OnceLock::new(),
+            #[cfg(feature = "cuda")]
+            gpu_configs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            #[cfg(feature = "cuda")]
+            gpu_database: GpuDatabase::new(),
+        }
+    }
 }
 
 #[async_trait]
@@ -46,26 +70,47 @@ impl GpuBackend for CudaBackend {
         // Initialize the CUDA driver (no-op if already initialized).
         cust::init(CudaFlags::empty())?;
 
-        // Enumerate devices.
-        // Note: These API names are based on cust >= 0.8. Adjust if needed when wiring the full backend.
+        // Enumerate devices and configure each one
         let num = cust::device::Device::num_devices()?;
         let mut out = Vec::with_capacity(num as usize);
+        let mut configs = Vec::with_capacity(num as usize);
+
         for ordinal in 0..num {
             let dev = cust::device::Device::get_device(ordinal)?;
             let name = dev.name()?;
             // total_memory() returns bytes; convert to MiB for display.
             let memory_mb = (dev.total_memory()? as u64) / (1024 * 1024);
+
+            // Get optimal configuration for this GPU
+            let config = self.gpu_database.get_config(&name);
+            info!(
+                "GPU {}: {} ({} MiB) - using grid={}, block={}, nonces_per_thread={}",
+                ordinal,
+                name,
+                memory_mb,
+                config.grid_size,
+                config.block_size,
+                config.nonces_per_thread
+            );
+            configs.push(config);
+
             out.push(DeviceInfo {
                 index: ordinal,
                 name,
                 memory_mb,
             });
         }
+
+        // Store configurations for later use
+        if let Ok(mut guard) = self.gpu_configs.lock() {
+            *guard = configs;
+        }
+
         info!("CUDA enumeration found {} device(s)", out.len());
         Ok(out)
     }
 
-    #[cfg(feature = "cuda-stub")]
+    #[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
     async fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
         debug!("CudaBackend running in stub mode (cuda-stub feature)");
         // Return a fake GPU for testing
@@ -93,7 +138,22 @@ impl GpuBackend for CudaBackend {
         // context and stream(s) per device.
         let _ctx = cust::context::Context::new(device)?;
 
-        // Load PTX for the "sha256d" module generated at build time and get the hello kernel.
+        // Get GPU configuration for this device
+        let config = {
+            let configs = self
+                .gpu_configs
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock configs: {}", e))?;
+            configs
+                .get(device_index as usize)
+                .cloned()
+                .unwrap_or_else(|| {
+                    debug!("No config for device {}, using defaults", device_index);
+                    GpuConfig::default()
+                })
+        };
+
+        // Load PTX for the "sha256d" module generated at build time and get the kernel.
         let ptx_bytes = nitrate_cuda_ptx::get_ptx_by_name("sha256d")
             .ok_or_else(|| anyhow::anyhow!("no PTX embedded for 'sha256d'"))?;
         let ptx_str =
@@ -101,18 +161,18 @@ impl GpuBackend for CudaBackend {
         let module = Module::from_ptx(ptx_str, &[])?;
         let func = module.get_function("sha256d_scan_kernel")?;
 
-        // Set up stream and grid for mining kernel launch.
+        // Set up stream and grid using GPU-specific configuration
         let stream = Stream::new(StreamFlags::DEFAULT, None)?;
-        let block: u32 = 256;
-        let grid: u32 = 256;
+        let block = config.block_size;
+        let grid = config.grid_size;
 
         // Upload parameters for mining kernel.
         let d_mid = DeviceBuffer::<u32>::from_slice(&work.midstate)?;
         let d_tail = DeviceBuffer::<u8>::from_slice(&work.header_tail)?;
         let d_target = DeviceBuffer::<u8>::from_slice(&work.target_be)?;
 
-        // Candidate ring buffer and write index.
-        let ring_capacity: u32 = 4096;
+        // Candidate ring buffer and write index using configured size
+        let ring_capacity = config.ring_capacity;
         let d_ring: DeviceBuffer<DeviceCandidate> =
             unsafe { DeviceBuffer::uninitialized(ring_capacity as usize)? };
         let d_write_idx = DeviceBuffer::<u32>::zeroed(1)?;
@@ -173,13 +233,17 @@ impl GpuBackend for CudaBackend {
             generation = work.generation,
             start = work.start_nonce,
             count = work.nonce_count,
-            "CUDA sha256d kernel launch completed"
+            grid = grid,
+            block = block,
+            "CUDA sha256d kernel launch completed with grid={} block={}",
+            grid,
+            block
         );
 
         Ok(())
     }
 
-    #[cfg(feature = "cuda-stub")]
+    #[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
     async fn launch(&self, device_index: u32, work: KernelWork) -> Result<()> {
         debug!(
             device_index,
@@ -214,7 +278,7 @@ impl GpuBackend for CudaBackend {
         Ok(Vec::new())
     }
 
-    #[cfg(feature = "cuda-stub")]
+    #[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
     async fn poll_results(&self, _device_index: u32) -> Result<Vec<FoundNonce>> {
         // Stub returns no results
         Ok(vec![])
