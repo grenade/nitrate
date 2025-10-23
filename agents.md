@@ -71,7 +71,12 @@ nitrate/
       async fn poll_results(&self, device_index: u32) -> Result<Vec<FoundNonce>>;
   }
   ```
-- `KernelWork` contains the **midstate**, a small **tail** (time/bits/nonce slot), **target**, and a **nonce range**.
+- `KernelWork` includes:
+  - **midstate**: SHA-256 state after header bytes 0..63, as 8 big-endian u32 words.
+  - **tail (12B)**: ntime (u32 LE) | nbits (u32 LE) | nonce placeholder (u32 LE = 0).
+  - **target_be (32B)**: big-endian share target; compare lexicographically with `hash_be` (hash_be ≤ target_be).
+  - **nonce slice**: start_nonce (inclusive) and nonce_count.
+  - **generation**: monotonic job generation for cancellation; backends must drop results from older generations.
 
 ### `nitrate-gpu-dummy`
 - No-op GPU backend. Implements the trait so the rest of the stack compiles and runs while wiring network/protocol pieces.
@@ -102,7 +107,7 @@ This section gives you concrete TODOs and call sites to fill in.
 
 ### A) Stratum v1 (in `nitrate-pool`)
 
-1. **Framing**: line-delimited JSON per Stratum v1. Use `BufReader::lines()`.
+1. **Framing**: line-delimited JSON per Stratum v1 over TCP or TLS (`stratum+ssl`). Use `BufReader::lines()`; for TLS, wrap the TCP stream with a TLS client (e.g., rustls), validate system roots by default, and allow a configurable insecure mode for testing only.
 2. **Subscribe/Authorize**:
    - Send `mining.subscribe` with client ID (e.g., `"Nitrate/0.1"`).
    - Parse response for `extranonce1` and `extranonce2_size`.
@@ -138,7 +143,7 @@ This section gives you concrete TODOs and call sites to fill in.
   - Precompute SHA256 state after hashing bytes 0..63 (first 64 bytes of header).
   - Pass midstate + the remaining 16 bytes (time|bits|nonce placeholder) to GPU.
 - **Targets**:
-  - From pool difficulty (share target), compute a **big‑endian** 32‑byte target used by kernels.
+  - From pool difficulty (share target), compute a 32-byte big-endian share target (`target_be`) used by kernels. Kernels must compare the big-endian double-SHA256 header (`hash_be`) lexicographically and accept candidates where `hash_be ≤ target_be`.
 - **CPU verify**:
   - When a GPU finds a candidate, insert the nonce into the header tail, compute SHA256d(header), and compare ≤ target.
 
