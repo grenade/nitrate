@@ -76,6 +76,9 @@ miner.local.toml
 *.podman
 *.yaml
 *.yml
+# Allow GitHub Actions workflows
+!.github/workflows/*.yml
+!.github/workflows/*.yaml
 
 # === Docs & generated artifacts ===
 /docs/generated/
