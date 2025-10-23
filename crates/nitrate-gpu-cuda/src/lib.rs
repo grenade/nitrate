@@ -8,6 +8,8 @@ use nitrate_gpu_api::{DeviceInfo, FoundNonce, GpuBackend, KernelWork};
 use tracing::warn;
 #[cfg(feature = "cuda")]
 use tracing::{debug, info};
+#[cfg(feature = "cuda")]
+include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 
 /// CUDA backend for Nitrate.
 ///
@@ -64,16 +66,42 @@ impl GpuBackend for CudaBackend {
         // context and stream(s) per device.
         let _ctx = cust::context::Context::new(device)?;
 
+        // Load PTX for the "sha256d" module generated at build time and get the hello kernel.
+        let ptx_bytes = nitrate_cuda_ptx::get_ptx_by_name("sha256d")
+            .ok_or_else(|| anyhow::anyhow!("no PTX embedded for 'sha256d'"))?;
+        let ptx_str =
+            std::str::from_utf8(ptx_bytes).map_err(|_| anyhow::anyhow!("PTX not valid UTF-8"))?;
+        let module = Module::from_ptx(ptx_str, &[])?;
+        let func = module.get_function("hello_kernel")?;
+
+        // Allocate a small output buffer and launch the kernel as a smoke test.
+        let len: usize = 256;
+        let mut out = DeviceBuffer::<u32>::zeroed(len)?;
+        let stream = Stream::new(StreamFlags::DEFAULT, None)?;
+        let block: u32 = 128;
+        let grid: u32 = ((len as u32) + block - 1) / block;
+
+        unsafe {
+            launch!(func<<<grid, block, 0, stream>>>(
+                out.as_device_ptr(),
+                len as u32,
+                0xDEADBEEF_u32
+            ))?;
+        }
+        stream.synchronize()?;
+
+        // Read back one value to ensure the launch executed, then log a small sample.
+        let mut host = vec![0u32; 4.min(len)];
+        out.copy_to(&mut host)?;
         debug!(
             device_index,
             generation = work.generation,
             start = work.start_nonce,
             count = work.nonce_count,
-            "CUDA launch stub invoked"
+            sample = ?host,
+            "CUDA hello kernel launch completed"
         );
 
-        // TODO: Upload parameters (midstate, header_tail[16], target_be[32]), set up a
-        // device-side result ring buffer, and launch the SHA256d midstate kernel here.
         Ok(())
     }
 
