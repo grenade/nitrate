@@ -11,6 +11,18 @@ use tracing::{debug, info};
 #[cfg(feature = "cuda")]
 include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 
+#[cfg(feature = "cuda")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DeviceCandidate {
+    nonce: u32,
+    hash_be: [u8; 32],
+    generation: u64,
+}
+
+#[cfg(feature = "cuda")]
+unsafe impl cust::memory::DeviceCopy for DeviceCandidate {}
+
 /// CUDA backend for Nitrate.
 ///
 /// - With `cuda` feature: performs CUDA driver init and basic device enumeration.
@@ -19,6 +31,8 @@ include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 pub struct CudaBackend {
     #[cfg(feature = "cuda")]
     _marker: std::marker::PhantomData<()>,
+    #[cfg(feature = "cuda")]
+    last_candidates: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<FoundNonce>>>>,
 }
 
 #[async_trait]
@@ -72,34 +86,81 @@ impl GpuBackend for CudaBackend {
         let ptx_str =
             std::str::from_utf8(ptx_bytes).map_err(|_| anyhow::anyhow!("PTX not valid UTF-8"))?;
         let module = Module::from_ptx(ptx_str, &[])?;
-        let func = module.get_function("hello_kernel")?;
+        let func = module.get_function("sha256d_scan_kernel")?;
 
-        // Allocate a small output buffer and launch the kernel as a smoke test.
-        let len: usize = 256;
-        let mut out = DeviceBuffer::<u32>::zeroed(len)?;
+        // Set up stream and grid for mining kernel launch.
         let stream = Stream::new(StreamFlags::DEFAULT, None)?;
-        let block: u32 = 128;
-        let grid: u32 = ((len as u32) + block - 1) / block;
+        let block: u32 = 256;
+        let grid: u32 = 256;
+
+        // Upload parameters for mining kernel.
+        let d_mid = DeviceBuffer::<u32>::from_slice(&work.midstate)?;
+        let d_tail = DeviceBuffer::<u8>::from_slice(&work.header_tail)?;
+        let d_target = DeviceBuffer::<u8>::from_slice(&work.target_be)?;
+
+        // Candidate ring buffer and write index.
+        let ring_capacity: u32 = 4096;
+        let d_ring: DeviceBuffer<DeviceCandidate> =
+            unsafe { DeviceBuffer::uninitialized(ring_capacity as usize)? };
+        let d_write_idx = DeviceBuffer::<u32>::zeroed(1)?;
 
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
-                out.as_device_ptr(),
-                len as u32,
-                0xDEADBEEF_u32
+                d_mid.as_device_ptr(),
+                d_tail.as_device_ptr(),
+                d_target.as_device_ptr(),
+                work.start_nonce,
+                work.nonce_count,
+                work.generation as u64,
+                ring_capacity,
+                d_write_idx.as_device_ptr(),
+                d_ring.as_device_ptr()
             ))?;
         }
         stream.synchronize()?;
 
-        // Read back one value to ensure the launch executed, then log a small sample.
-        let mut host = vec![0u32; 4.min(len)];
-        out.copy_to(&mut host)?;
+        // Drain candidates found in this launch into a shared buffer for poll_results().
+        let mut write_idx_host = [0u32; 1];
+        d_write_idx.copy_to(&mut write_idx_host)?;
+        let total = core::cmp::min(write_idx_host[0] as usize, ring_capacity as usize);
+        if total > 0 {
+            let mut host_ring = vec![
+                DeviceCandidate {
+                    nonce: 0,
+                    hash_be: [0u8; 32],
+                    generation: 0
+                };
+                total
+            ];
+            d_ring.copy_to(&mut host_ring[..])?;
+
+            let found: Vec<FoundNonce> = host_ring
+                .into_iter()
+                .map(|c| FoundNonce {
+                    nonce: c.nonce,
+                    hash_be: c.hash_be,
+                })
+                .collect();
+
+            let pool = self
+                .last_candidates
+                .get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
+                .clone();
+            {
+                let mut guard = match pool.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                guard.extend(found.into_iter());
+            }
+        }
+
         debug!(
             device_index,
             generation = work.generation,
             start = work.start_nonce,
             count = work.nonce_count,
-            sample = ?host,
-            "CUDA hello kernel launch completed"
+            "CUDA sha256d kernel launch completed"
         );
 
         Ok(())
@@ -114,7 +175,17 @@ impl GpuBackend for CudaBackend {
     #[cfg(feature = "cuda")]
     async fn poll_results(&self, device_index: u32) -> Result<Vec<FoundNonce>> {
         let _ = device_index;
-        // TODO: Read and drain the device-side result ring. For now, return no results.
+        // Drain any candidates captured during the last launch.
+        if let Some(pool) = self.last_candidates.get() {
+            let out = {
+                let mut guard = match pool.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                guard.drain(..).collect()
+            };
+            return Ok(out);
+        }
         Ok(Vec::new())
     }
 
