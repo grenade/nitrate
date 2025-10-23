@@ -1,6 +1,6 @@
 [package]
 name = "nitrate-gpu-cuda"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "CUDA backend for Nitrate GPU miner, using the cust CUDA driver bindings"

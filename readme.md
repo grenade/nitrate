@@ -245,6 +245,30 @@ Minimal example:
 - Keep public APIs small, testable, and backend-agnostic.
 - Open a PR with descriptive commit messages and include tests or updates to existing tests where possible.
 
+### Version Management
+
+The workspace uses a single version defined in the root `Cargo.toml`:
+```toml
+[workspace.package]
+version = "0.1.0"
+```
+
+All crates inherit this version using `version.workspace = true`. To manage versions:
+
+```bash
+# Get current version
+./scripts/version.sh get
+
+# Set new version
+./scripts/version.sh set 1.2.3
+
+# Show all crate versions
+./scripts/version.sh show
+
+# Bump version
+./scripts/version.sh bump patch  # or minor/major
+```
+
 ## CI/CD Notes
 
 The CI pipeline runs on standard GitHub runners without CUDA. For CUDA-related checks:

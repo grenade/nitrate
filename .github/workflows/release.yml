@@ -60,7 +60,7 @@ jobs:
       - name: Get current version
         id: current
         run: |
-          VERSION=$(grep '^version' bins/nitrate-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
 
@@ -105,20 +105,12 @@ jobs:
           echo "Rust location: $(which cargo 2>/dev/null || echo 'not in PATH')"
           echo "CUDA location: $(which nvcc 2>/dev/null || echo 'not in PATH')"
 
-      - name: Update version in Cargo.toml files
+      - name: Update version in workspace Cargo.toml
         run: |
           NEW_VERSION="${{ needs.validate.outputs.new_version }}"
-          # Update version in all workspace crates
-          for toml in $(find . -name "Cargo.toml"); do
-            if grep -q '^version = "' "$toml"; then
-              sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$toml"
-            fi
-          done
-
-          # Update workspace dependencies to use new version
-          find . -name "Cargo.toml" -exec sed -i \
-            -e "s/nitrate-[a-z-]* = { version = \"[^\"]*\"/&/g" \
-            -e "s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/g" {} \;
+          # Update only the workspace version in the main Cargo.toml
+          sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          echo "Updated workspace version to $NEW_VERSION"
 
       - name: Setup Rust environment in container
         run: |
@@ -201,21 +193,20 @@ jobs:
         with:
           name: release-binaries
 
-      - name: Update version in repository
+      - name: Update and commit version in repository
         run: |
           NEW_VERSION="${{ needs.validate.outputs.new_version }}"
 
-          # Update all Cargo.toml files
-          for toml in $(find . -name "Cargo.toml"); do
-            if grep -q '^version = "' "$toml"; then
-              sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$toml"
-            fi
-          done
+          # Update only the workspace version in the main Cargo.toml
+          sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+
+          # Also update Cargo.lock to reflect the new version
+          cargo update --workspace
 
           # Commit version bump
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add -A
+          git add Cargo.toml Cargo.lock
           git diff --staged --quiet || git commit -m "chore: bump version to v$NEW_VERSION"
           git tag "v$NEW_VERSION"
           git push origin main

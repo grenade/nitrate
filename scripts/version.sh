@@ -15,9 +15,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 function get_current_version() {
-    local cargo_toml="$WORKSPACE_ROOT/bins/nitrate-cli/Cargo.toml"
+    local cargo_toml="$WORKSPACE_ROOT/Cargo.toml"
     if [[ -f "$cargo_toml" ]]; then
-        grep '^version' "$cargo_toml" | head -1 | sed 's/.*"\(.*\)".*/\1/'
+        grep '^version = ' "$cargo_toml" | head -1 | sed 's/.*"\(.*\)".*/\1/'
     else
         echo "0.1.0"
     fi
@@ -38,25 +38,22 @@ function set_version() {
         exit 1
     fi
 
-    echo -e "${GREEN}Setting version to $new_version across workspace...${NC}"
+    echo -e "${GREEN}Setting workspace version to $new_version...${NC}"
 
-    # Update all Cargo.toml files
-    find "$WORKSPACE_ROOT" -name "Cargo.toml" -type f | while read -r toml; do
-        if grep -q '^version = "' "$toml"; then
-            # Update the version line
-            sed -i.bak "s/^version = \".*\"/version = \"$new_version\"/" "$toml"
+    # Update only the workspace version in the main Cargo.toml
+    local cargo_toml="$WORKSPACE_ROOT/Cargo.toml"
+    if [[ -f "$cargo_toml" ]]; then
+        # Update the version line in the [workspace.package] section
+        sed -i.bak "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$new_version\"/" "$cargo_toml"
 
-            # Also update path dependencies to workspace crates
-            sed -i.bak "s/\(nitrate-[a-z-]*\s*=\s*{\s*path\s*=.*version\s*=\s*\)\"[^\"]*\"/\1\"$new_version\"/" "$toml"
+        # Clean up backup file
+        rm -f "${cargo_toml}.bak"
 
-            # Clean up backup files
-            rm -f "${toml}.bak"
-
-            # Show which file was updated
-            relative_path="${toml#$WORKSPACE_ROOT/}"
-            echo "  Updated: $relative_path"
-        fi
-    done
+        echo "  Updated: Cargo.toml (workspace version)"
+    else
+        echo -e "${RED}Error: Workspace Cargo.toml not found${NC}"
+        exit 1
+    fi
 
     echo -e "${GREEN}Version set to $new_version${NC}"
 }
@@ -65,12 +62,17 @@ function show_versions() {
     echo -e "${YELLOW}Workspace crate versions:${NC}"
     echo ""
 
+    # Show workspace version
+    local workspace_version=$(get_current_version)
+    echo -e "  ${GREEN}Workspace version: $workspace_version${NC}"
+    echo ""
+
+    # Show all crate names (they all inherit the workspace version)
     find "$WORKSPACE_ROOT" -name "Cargo.toml" -type f | sort | while read -r toml; do
         if grep -q '^name = "nitrate' "$toml"; then
             crate_name=$(grep '^name = "' "$toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-            version=$(grep '^version = "' "$toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
             relative_path="${toml#$WORKSPACE_ROOT/}"
-            printf "  %-25s %s\n" "$crate_name:" "$version"
+            printf "  %-25s (workspace version)\n" "$crate_name:"
         fi
     done
 }
