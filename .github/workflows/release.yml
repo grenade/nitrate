@@ -160,7 +160,7 @@ jobs:
           # Create tarball with binary and supporting files
           cp target/release/nitrate-cli dist/
           cp README.md dist/ 2>/dev/null || echo "# Nitrate GPU Miner" > dist/README.md
-          cp miner.toml dist/miner.example.toml
+          cp miner.example.toml dist/miner.example.toml
 
           cd dist
           tar czf nitrate-${NEW_VERSION}-linux-x86_64-cuda.tar.gz *

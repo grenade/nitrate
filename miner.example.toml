@@ -1,0 +1,17 @@
+[pool]
+url = "stratum+tcp://solo.ckpool.org:3333"
+user = "bc1qfxg7az4ly0wwkz56hv9frw7729m8kntaslmfng.nitrate"
+pass = "x"
+
+[gpu]
+backend = "cuda"
+devices = [0]
+intensity = "auto"
+
+[runtime]
+reconnect_backoff = "1s..30s"
+stale_drop_ms = 500
+telemetry_addr = "0.0.0.0:9100"
+log = "info"
+#test_mode = true
+#test_difficulty = 0.00001
