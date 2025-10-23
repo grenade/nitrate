@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_bump:
-        description: 'Version bump type (major, minor, patch)'
+        description: "Version bump type (major, minor, patch)"
         required: true
         type: choice
         options:
@@ -95,7 +95,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/quantus-network/cuda-builder:13.0.0
-      options: --gpus all
     steps:
       - name: Checkout
         uses: actions/checkout@v4
