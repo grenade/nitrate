@@ -99,6 +99,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check container environment
+        run: |
+          echo "=== Container environment ==="
+          echo "USER: $USER"
+          echo "HOME: $HOME"
+          echo "PATH: $PATH"
+          echo ""
+          echo "=== CUDA environment ==="
+          which nvcc || echo "nvcc not found in PATH"
+          nvcc --version || echo "nvcc not available"
+          echo "CUDA_PATH: ${CUDA_PATH:-not set}"
+          echo ""
+          echo "=== Rust environment ==="
+          which rustc || echo "rustc not found in PATH"
+          which cargo || echo "cargo not found in PATH"
+          rustc --version || echo "rustc not available"
+          cargo --version || echo "cargo not available"
+          echo ""
+          echo "=== Checking .cargo directory ==="
+          ls -la $HOME/.cargo/ 2>/dev/null || echo "No .cargo directory"
+          echo ""
+          echo "=== Checking /root/.cargo directory ==="
+          ls -la /root/.cargo/ 2>/dev/null || echo "No /root/.cargo directory"
+
       - name: Update version in Cargo.toml files
         run: |
           NEW_VERSION="${{ needs.validate.outputs.new_version }}"
@@ -114,12 +138,32 @@ jobs:
             -e "s/nitrate-[a-z-]* = { version = \"[^\"]*\"/&/g" \
             -e "s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/g" {} \;
 
-      - name: Setup Rust in container
+      - name: Setup Rust environment in container
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source $HOME/.cargo/env
-          rustup component add rustfmt clippy
+          # The container may have Rust installed in different locations
+          # Check common locations and add to PATH
+          if [ -d "/root/.cargo/bin" ]; then
+            echo "/root/.cargo/bin" >> $GITHUB_PATH
+            export PATH="/root/.cargo/bin:$PATH"
+          elif [ -d "$HOME/.cargo/bin" ]; then
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+
+          # If Rust is not available, install it
+          if ! command -v cargo &> /dev/null; then
+            echo "Cargo not found, installing Rust..."
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source $HOME/.cargo/env
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
+
+          # Verify Rust is available
+          rustc --version
+          cargo --version
+
+          # Add components if not already present
+          rustup component add rustfmt clippy 2>/dev/null || true
 
       - name: Cache cargo registry and target
         uses: actions/cache@v4
@@ -134,7 +178,19 @@ jobs:
 
       - name: Build release binary with CUDA
         run: |
-          source $HOME/.cargo/env
+          # Ensure cargo is in PATH (handle both /root and $HOME locations)
+          if [ -d "/root/.cargo/bin" ]; then
+            export PATH="/root/.cargo/bin:$PATH"
+          elif [ -d "$HOME/.cargo/bin" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+
+          # Source env if available
+          if [ -f "$HOME/.cargo/env" ]; then
+            source $HOME/.cargo/env
+          elif [ -f "/root/.cargo/env" ]; then
+            source /root/.cargo/env
+          fi
           export CUDA_PATH=/usr/local/cuda
           export PATH=$CUDA_PATH/bin:$PATH
           export LD_LIBRARY_PATH=$CUDA_PATH/lib64:$LD_LIBRARY_PATH
