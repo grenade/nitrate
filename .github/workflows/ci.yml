@@ -45,8 +45,10 @@ jobs:
       - name: Cargo clippy with dummy backend
         run: cargo clippy --workspace --all-targets --features nitrate-core/gpu-dummy -- -D warnings
 
-      #- name: Cargo clippy with CUDA backend
-      #  run: cargo clippy --workspace --all-targets --features nitrate-core/gpu-cuda -- -D warnings
+      - name: Cargo clippy with CUDA backend (stub mode)
+        env:
+          NITRATE_CUDA_SKIP: 1
+        run: cargo clippy --workspace --all-targets --features nitrate-core/gpu-cuda -- -D warnings
 
       - name: Cargo test (build only)
         run: cargo test --workspace --features nitrate-core/gpu-dummy --no-run

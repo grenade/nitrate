@@ -63,6 +63,23 @@ cargo build --release -p nitrate-cli --features gpu-dummy
 ./target/release/nitrate-cli --config miner.toml
 ```
 
+#### Build Options
+
+Environment variables for controlling the build:
+
+- `NVCC`: Override path to NVCC compiler (default: searches CUDA_HOME/bin, CUDA_PATH/bin, or PATH)
+- `CUDA_ARCH`: Target CUDA architecture (default: `sm_52`)
+- `NITRATE_CUDA_SKIP=1`: Skip CUDA compilation entirely (useful for CI/checks without CUDA toolkit)
+
+Example:
+```bash
+# Build for specific CUDA architecture
+CUDA_ARCH=sm_86 cargo build --release -p nitrate-cli --features gpu-cuda
+
+# Run clippy checks without CUDA toolkit
+NITRATE_CUDA_SKIP=1 cargo clippy --features nitrate-core/gpu-cuda
+```
+
 ## Repository layout
 
 Top-level files:
@@ -227,6 +244,13 @@ Minimal example:
 - Use `tracing` spans for job and device context in logs.
 - Keep public APIs small, testable, and backend-agnostic.
 - Open a PR with descriptive commit messages and include tests or updates to existing tests where possible.
+
+## CI/CD Notes
+
+The CI pipeline runs on standard GitHub runners without CUDA. For CUDA-related checks:
+- Clippy and format checks use `NITRATE_CUDA_SKIP=1` to generate stub PTX modules
+- Release builds use the `ghcr.io/quantus-network/cuda-builder:13.0.0` Docker image with CUDA 13.0
+- The build system gracefully handles missing NVCC for check/clippy operations
 
 ## Release Process
 

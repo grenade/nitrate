@@ -37,6 +37,20 @@ fn main() {
         return;
     }
 
+    // Allow explicitly skipping CUDA compilation (useful for CI without CUDA)
+    if env::var("NITRATE_CUDA_SKIP").is_ok() {
+        eprintln!("cargo:warning=NITRATE_CUDA_SKIP set; generating stub for CUDA kernels");
+        if let Err(e) = write_stub_generated() {
+            eprintln!("cargo:warning=failed to write stub kernel_ptx.rs: {e}");
+        }
+        return;
+    }
+
+    // Check if we're in check/clippy mode (don't need actual CUDA)
+    let is_check_mode = env::var("CARGO_CFG_DOCTEST").is_ok()
+        || env::var("CARGO_CFG_TEST").is_ok()
+        || matches!(env::var("CARGO").ok().as_deref(), Some(path) if path.contains("clippy") || path.contains("check"));
+
     let kernel_dir = PathBuf::from("kernels");
     println!("cargo:rerun-if-changed={}", kernel_dir.display());
 
@@ -63,6 +77,33 @@ fn main() {
 
     // Resolve NVCC path
     let nvcc = resolve_nvcc();
+
+    // Check if nvcc actually exists and is executable
+    let nvcc_available = Command::new(&nvcc)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if !nvcc_available {
+        if is_check_mode {
+            // For clippy/check, generate stub and continue
+            eprintln!(
+                "cargo:warning=NVCC not found at {}; generating stub for check/clippy",
+                nvcc.display()
+            );
+            let _ = write_stub_generated();
+            return;
+        } else {
+            // For actual builds, warn but continue with stub
+            eprintln!(
+                "cargo:warning=NVCC not found at {}; CUDA kernels will not be available",
+                nvcc.display()
+            );
+            let _ = write_stub_generated();
+            return;
+        }
+    }
 
     // Select architecture (default reasonable baseline)
     let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_52".to_string());
@@ -159,7 +200,7 @@ fn resolve_nvcc() -> PathBuf {
             return p;
         }
     }
-    // Fallback to "nvcc" in PATH
+    // Fallback to "nvcc" in PATH (may not exist)
     PathBuf::from("nvcc")
 }
 
