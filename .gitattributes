@@ -1,0 +1,45 @@
+# Normalize line endings (LF everywhere)
+* text=auto eol=lf
+
+# Treat these as text explicitly
+*.rs     text
+*.toml   text
+*.md     text
+*.yml    text
+*.yaml   text
+*.json   text
+*.txt    text
+*.sh     text
+
+# Binary artifacts (no diffs)
+*.ptx    binary
+*.cubin  binary
+*.fatbin binary
+*.hsaco  binary
+*.so     binary
+*.dylib  binary
+*.dll    binary
+*.exe    binary
+*.a      binary
+*.lib    binary
+*.obj    binary
+*.o      binary
+*.pdf    binary
+*.zip    binary
+*.tar.gz binary
+
+# GitHub Linguist tweaks
+*.ptx linguist-detectable=false
+*.cubin linguist-detectable=false
+*.hsaco linguist-detectable=false
+crates/**/benches/** linguist-vendored
+docs/** linguist-documentation
+
+# Export ignores (omit dev-only files from source archives)
+/scripts/dev-* export-ignore
+/.vscode         export-ignore
+/.idea           export-ignore
+/.github/ISSUE_TEMPLATE.md export-ignore
+
+# Merge strategy hints
+miner.toml merge=ours
