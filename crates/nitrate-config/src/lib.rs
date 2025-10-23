@@ -9,10 +9,16 @@ pub enum ConfigError {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolCfg {
+    // Pool URL supports "stratum+tcp://" and "stratum+ssl://".
+    // If scheme is omitted, the pool client will use `tls` to decide transport.
     pub url: String,  // e.g., stratum+tcp://solo.ckpool.org:3333
     pub user: String, // wallet or wallet.worker
     #[serde(default = "default_password")]
     pub pass: String,
+    #[serde(default)]
+    pub tls: bool, // true to use TLS (stratum+ssl) when no scheme is provided
+    #[serde(default)]
+    pub tls_insecure: bool, // disable certificate verification (testing only)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

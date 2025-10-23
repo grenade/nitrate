@@ -18,11 +18,21 @@ pub struct StratumClient {
 
 impl StratumClient {
     pub async fn connect(cfg: PoolConfig) -> Result<Self> {
-        // Minimal URL parser for stratum+tcp://host:port
-        let addr = cfg.url.strip_prefix("stratum+tcp://").unwrap_or(&cfg.url);
-        info!("connecting to pool at {addr}");
-        let _stream = TcpStream::connect(addr).await?; // not kept yet; skeleton only
-                                                       // In real impl: send subscribe/authorize and start read loop.
+        // URL parsing supports:
+        // - stratum+tcp://host:port  => use_tls = false
+        // - stratum+ssl://host:port  => use_tls = true
+        // - host:port (no scheme)    => defaults to TCP (use_tls = false)
+        let (use_tls, addr) = if let Some(rest) = cfg.url.strip_prefix("stratum+tcp://") {
+            (false, rest.to_string())
+        } else if let Some(rest) = cfg.url.strip_prefix("stratum+ssl://") {
+            (true, rest.to_string())
+        } else {
+            (false, cfg.url.clone())
+        };
+        info!("connecting to pool at {} (tls={})", addr, use_tls);
+        let _stream = TcpStream::connect(&addr).await?; // not kept yet; skeleton only
+                                                        // TODO: When `use_tls` is true, perform TLS handshake (e.g., rustls) over this TCP stream.
+                                                        // In real impl: send subscribe/authorize and start read loop.
         Ok(Self { cfg })
     }
 
