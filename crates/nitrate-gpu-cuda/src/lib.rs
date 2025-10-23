@@ -1,7 +1,10 @@
 #![doc = "CUDA backend scaffold for Nitrate GPU miner.\n\nThis crate provides a feature-gated CUDA backend implementation of the `GpuBackend`\ntrait. When built with the `cuda` feature, it initializes the CUDA driver using\n`cust` and performs basic device enumeration. `launch` and `poll_results` are\nimplemented as stubs for now, to be filled in with a real SHA256d midstate-based\nkernel and a device-side result ring.\n\nWhen the `cuda` feature is NOT enabled, the same `CudaBackend` type is exposed,\nbut all trait methods return clear errors to indicate the backend is unavailable.\nThis keeps the crate buildable in the workspace without requiring CUDA.\n"]
-use anyhow::{bail, Result};
+#[cfg(not(feature = "cuda"))]
+use anyhow::bail;
+use anyhow::Result;
 use async_trait::async_trait;
 use nitrate_gpu_api::{DeviceInfo, FoundNonce, GpuBackend, KernelWork};
+#[cfg(not(feature = "cuda"))]
 use tracing::warn;
 #[cfg(feature = "cuda")]
 use tracing::{debug, info};
@@ -59,10 +62,7 @@ impl GpuBackend for CudaBackend {
         let device = cust::device::Device::get_device(device_index)?;
         // For now we create a short-lived context; future versions should manage a long-lived
         // context and stream(s) per device.
-        let _ctx = cust::context::Context::create_and_push(
-            cust::context::ContextFlags::MAP_HOST | cust::context::ContextFlags::SCHED_AUTO,
-            device,
-        )?;
+        let _ctx = cust::context::Context::new(device)?;
 
         debug!(
             device_index,
