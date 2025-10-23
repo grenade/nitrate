@@ -208,12 +208,14 @@ impl GpuBackend for CudaBackend {
                     hash_be: [0u8; 32],
                     generation: 0
                 };
-                total
+                ring_capacity as usize
             ];
+            // Copy the full ring buffer from device to host
             d_ring.copy_to(&mut host_ring[..])?;
 
             let found: Vec<FoundNonce> = host_ring
                 .into_iter()
+                .take(total)
                 .map(|c| FoundNonce {
                     nonce: c.nonce,
                     hash_be: c.hash_be,

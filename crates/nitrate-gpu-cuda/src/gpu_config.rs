@@ -34,15 +34,16 @@ impl GpuDatabase {
     pub fn new() -> Self {
         let mut configs = HashMap::new();
 
-        // RTX 5090: 21,760 CUDA cores, 170 SMs
-        // Use more aggressive settings for this high-end GPU
+        // RTX 5090: 21,760 CUDA cores, 170 SMs (Blackwell architecture)
+        // Conservative settings to avoid "too many resources requested" errors
+        // These can be overridden via device_overrides in config if needed
         configs.insert(
             "NVIDIA GeForce RTX 5090".to_string(),
             GpuConfig {
-                grid_size: 5440,      // 170 SMs * 32 blocks per SM (double occupancy)
+                grid_size: 2720,      // 170 SMs * 16 blocks per SM (conservative occupancy)
                 block_size: 512,      // Optimal for Blackwell architecture
-                nonces_per_thread: 8, // Process 8 nonces per thread for better throughput
-                ring_capacity: 65536, // Very large buffer for massive throughput
+                nonces_per_thread: 4, // Reduced from 8 to avoid resource exhaustion
+                ring_capacity: 32768, // Large buffer but not excessive
             },
         );
 
