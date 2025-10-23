@@ -1,0 +1,275 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type (major, minor, patch)'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  validate:
+    name: Validate and Test
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests (without CUDA)
+        run: cargo test --workspace --no-default-features --features nitrate-core/gpu-dummy
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION=$(grep '^version' bins/nitrate-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+
+      - name: Calculate new version
+        id: bump
+        run: |
+          CURRENT="${{ steps.current.outputs.version }}"
+          IFS='.' read -r major minor patch <<< "$CURRENT"
+
+          case "${{ github.event.inputs.version_bump }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          NEW_VERSION="${major}.${minor}.${patch}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version will be: $NEW_VERSION"
+
+  build-cuda:
+    name: Build CUDA Release Binary
+    needs: validate
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/quantus-network/cuda-builder:13.0.0
+      options: --gpus all
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update version in Cargo.toml files
+        run: |
+          NEW_VERSION="${{ needs.validate.outputs.new_version }}"
+          # Update version in all workspace crates
+          for toml in $(find . -name "Cargo.toml"); do
+            if grep -q '^version = "' "$toml"; then
+              sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$toml"
+            fi
+          done
+
+          # Update workspace dependencies to use new version
+          find . -name "Cargo.toml" -exec sed -i \
+            -e "s/nitrate-[a-z-]* = { version = \"[^\"]*\"/&/g" \
+            -e "s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/g" {} \;
+
+      - name: Setup Rust in container
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source $HOME/.cargo/env
+          rustup component add rustfmt clippy
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cuda-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cuda-cargo-
+
+      - name: Build release binary with CUDA
+        run: |
+          source $HOME/.cargo/env
+          export CUDA_PATH=/usr/local/cuda
+          export PATH=$CUDA_PATH/bin:$PATH
+          export LD_LIBRARY_PATH=$CUDA_PATH/lib64:$LD_LIBRARY_PATH
+
+          # Build with CUDA feature enabled
+          cargo build --release -p nitrate-cli --features gpu-cuda
+
+          # Verify binary
+          ldd target/release/nitrate-cli || true
+          ./target/release/nitrate-cli --help || true
+
+      - name: Package binary
+        run: |
+          NEW_VERSION="${{ needs.validate.outputs.new_version }}"
+          mkdir -p dist
+
+          # Create tarball with binary and supporting files
+          cp target/release/nitrate-cli dist/
+          cp README.md dist/ 2>/dev/null || echo "# Nitrate GPU Miner" > dist/README.md
+          cp miner.toml dist/miner.example.toml
+
+          cd dist
+          tar czf nitrate-${NEW_VERSION}-linux-x86_64-cuda.tar.gz *
+          mv nitrate-${NEW_VERSION}-linux-x86_64-cuda.tar.gz ../
+          cd ..
+
+          # Also keep standalone binary
+          cp target/release/nitrate-cli nitrate-cli-linux-x86_64-cuda
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: |
+            nitrate-*.tar.gz
+            nitrate-cli-linux-x86_64-cuda
+
+  create-release:
+    name: Create GitHub Release
+    needs: [validate, build-cuda]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+
+      - name: Update version in repository
+        run: |
+          NEW_VERSION="${{ needs.validate.outputs.new_version }}"
+
+          # Update all Cargo.toml files
+          for toml in $(find . -name "Cargo.toml"); do
+            if grep -q '^version = "' "$toml"; then
+              sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$toml"
+            fi
+          done
+
+          # Commit version bump
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "chore: bump version to v$NEW_VERSION"
+          git tag "v$NEW_VERSION"
+          git push origin main
+          git push origin "v$NEW_VERSION"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          NEW_VERSION="${{ needs.validate.outputs.new_version }}"
+          cat << EOF > release_notes.md
+          ## Nitrate v$NEW_VERSION
+
+          ### Release Artifacts
+          - **nitrate-cli-linux-x86_64-cuda**: Standalone Linux binary with CUDA support
+          - **nitrate-${NEW_VERSION}-linux-x86_64-cuda.tar.gz**: Archive with binary and example config
+
+          ### Requirements
+          - Linux x86_64
+          - NVIDIA GPU with CUDA support
+          - CUDA driver compatible with CUDA 13.0
+
+          ### Quick Start
+          \`\`\`bash
+          # Download and extract
+          tar xzf nitrate-${NEW_VERSION}-linux-x86_64-cuda.tar.gz
+
+          # Edit configuration
+          cp miner.example.toml miner.toml
+          nano miner.toml  # Configure your pool settings
+
+          # Run miner
+          ./nitrate-cli --config miner.toml
+          \`\`\`
+
+          ### Changes
+          - Version bump: ${{ github.event.inputs.version_bump }}
+          - Built with CUDA 13.0 support
+          - Compiled from commit: ${{ github.sha }}
+
+          ### Metrics
+          Access Prometheus metrics at http://localhost:9100/metrics
+
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.validate.outputs.new_version }}
+          name: v${{ needs.validate.outputs.new_version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            nitrate-*.tar.gz
+            nitrate-cli-linux-x86_64-cuda
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup old releases (keep last 5)
+        run: |
+          # List releases and delete old ones, keeping the 5 most recent
+          gh release list --limit 100 --json tagName,createdAt | \
+            jq -r 'sort_by(.createdAt) | reverse | .[5:] | .[].tagName' | \
+            while read -r tag; do
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" -y || true
+              git push --delete origin "$tag" || true
+            done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

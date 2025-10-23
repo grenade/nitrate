@@ -101,6 +101,7 @@ miner.local.toml
 # === Temporary local scripts or test data ===
 scripts/local-*
 scripts/dev-*
+!scripts/version.sh
 /scratch/
 /sandbox/
 /tmp/

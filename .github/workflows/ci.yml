@@ -42,8 +42,11 @@ jobs:
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
-      - name: Cargo clippy (workspace, all targets)
+      - name: Cargo clippy with dummy backend
         run: cargo clippy --workspace --all-targets --features nitrate-core/gpu-dummy -- -D warnings
+
+      - name: Cargo clippy with CUDA backend
+        run: cargo clippy --workspace --all-targets --features nitrate-core/gpu-cuda -- -D warnings
 
       - name: Cargo test (build only)
         run: cargo test --workspace --features nitrate-core/gpu-dummy --no-run

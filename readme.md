@@ -24,6 +24,45 @@ For an in-depth tour of the workspace and responsibilities, see Agents & Workspa
 - CLI to run the miner, enumerate devices, and future self-tests.
 
 
+## Installation
+
+### Pre-built Binaries (Recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/grenade/nitrate/releases):
+
+```bash
+# Download the latest release
+wget https://github.com/grenade/nitrate/releases/latest/download/nitrate-cli-linux-x86_64-cuda
+
+# Make executable
+chmod +x nitrate-cli-linux-x86_64-cuda
+
+# Run the miner
+./nitrate-cli-linux-x86_64-cuda --config miner.toml
+```
+
+Requirements for pre-built binaries:
+- Linux x86_64
+- NVIDIA GPU with CUDA support
+- CUDA driver compatible with CUDA 13.0
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/grenade/nitrate.git
+cd nitrate
+
+# Build with CUDA support (requires CUDA toolkit)
+cargo build --release -p nitrate-cli --features gpu-cuda
+
+# Or build with dummy backend (no GPU required)
+cargo build --release -p nitrate-cli --features gpu-dummy
+
+# Run from build directory
+./target/release/nitrate-cli --config miner.toml
+```
+
 ## Repository layout
 
 Top-level files:
@@ -188,5 +227,22 @@ Minimal example:
 - Use `tracing` spans for job and device context in logs.
 - Keep public APIs small, testable, and backend-agnostic.
 - Open a PR with descriptive commit messages and include tests or updates to existing tests where possible.
+
+## Release Process
+
+Releases are created through GitHub Actions:
+
+1. Go to [Actions → Release workflow](https://github.com/grenade/nitrate/actions/workflows/release.yml)
+2. Click "Run workflow"
+3. Select version bump type (major, minor, or patch)
+4. The workflow will:
+   - Run tests and checks
+   - Build a Linux x86_64 binary with CUDA support
+   - Create a GitHub release with the binary
+   - Tag the repository with the new version
+
+Binary releases include:
+- `nitrate-cli-linux-x86_64-cuda`: Standalone executable with CUDA support
+- `nitrate-X.Y.Z-linux-x86_64-cuda.tar.gz`: Archive with binary and example configuration
 
 Happy hacking!

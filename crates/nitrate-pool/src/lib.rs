@@ -80,7 +80,7 @@ fn parse_notify(params: &[Value]) -> Result<MiningNotify> {
 
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(anyhow::anyhow!("hex string has odd length"));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -297,7 +297,7 @@ impl StratumClient {
                 match method {
                     "mining.set_difficulty" => {
                         if let Some(params) = msg.get("params").and_then(|v| v.as_array()) {
-                            if let Some(diff) = params.get(0).and_then(|v| v.as_f64()) {
+                            if let Some(diff) = params.first().and_then(|v| v.as_f64()) {
                                 current_difficulty = diff;
                                 info!("difficulty set to {}", current_difficulty);
                             }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nitrate_btc::{double_sha256_via_midstate, prepare_from_notify_parts};
+use nitrate_btc::{double_sha256_via_midstate, prepare_from_notify_parts, NotifyParams};
 use nitrate_config::AppCfg;
 use nitrate_gpu_api::{GpuBackend, KernelWork};
 use nitrate_metrics::Metrics;
@@ -106,17 +106,17 @@ impl<B: GpuBackend + Default> Engine<B> {
                 let extranonce2 = self.next_extranonce2(job.extranonce2_size);
 
                 // Prepare work from Stratum notify
-                let prepared = match prepare_from_notify_parts(
-                    &job.notify.version,
-                    &job.notify.prevhash,
-                    &job.notify.coinbase1,
-                    &job.notify.coinbase2,
-                    &job.notify.merkle_branch,
-                    &job.notify.ntime,
-                    &job.notify.nbits,
-                    &job.extranonce1,
-                    &extranonce2,
-                ) {
+                let prepared = match prepare_from_notify_parts(NotifyParams {
+                    version_hex_le: &job.notify.version,
+                    prevhash_hex_le: &job.notify.prevhash,
+                    coinbase1_hex: &job.notify.coinbase1,
+                    coinbase2_hex: &job.notify.coinbase2,
+                    merkle_branch_hex: &job.notify.merkle_branch,
+                    ntime_hex_le: &job.notify.ntime,
+                    nbits_hex_le: &job.notify.nbits,
+                    extranonce1: &job.extranonce1,
+                    extranonce2: &extranonce2,
+                }) {
                     Ok(p) => p,
                     Err(e) => {
                         warn!("failed to prepare work: {}", e);
@@ -226,15 +226,13 @@ impl<B: GpuBackend + Default> Engine<B> {
     fn difficulty_to_target(&self, _difficulty: f64) -> [u8; 32] {
         // Convert pool difficulty to 256-bit target
         // diff 1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
-        let diff1_target = [
+        // For simplicity, use diff1 target for now
+        // Real implementation would divide by difficulty
+        [
             0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00,
-        ];
-
-        // For simplicity, use diff1 target for now
-        // Real implementation would divide by difficulty
-        diff1_target
+        ]
     }
 
     fn hash_meets_target(&self, hash: &[u8; 32], target: &[u8; 32]) -> bool {

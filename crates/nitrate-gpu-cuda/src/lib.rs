@@ -49,12 +49,12 @@ impl GpuBackend for CudaBackend {
         let num = cust::device::Device::num_devices()?;
         let mut out = Vec::with_capacity(num as usize);
         for ordinal in 0..num {
-            let dev = cust::device::Device::get_device(ordinal as u32)?;
+            let dev = cust::device::Device::get_device(ordinal)?;
             let name = dev.name()?;
             // total_memory() returns bytes; convert to MiB for display.
             let memory_mb = (dev.total_memory()? as u64) / (1024 * 1024);
             out.push(DeviceInfo {
-                index: ordinal as u32,
+                index: ordinal,
                 name,
                 memory_mb,
             });
@@ -111,7 +111,7 @@ impl GpuBackend for CudaBackend {
                 d_target.as_device_ptr(),
                 work.start_nonce,
                 work.nonce_count,
-                work.generation as u64,
+                work.generation,
                 ring_capacity,
                 d_write_idx.as_device_ptr(),
                 d_ring.as_device_ptr()
@@ -151,7 +151,7 @@ impl GpuBackend for CudaBackend {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
-                guard.extend(found.into_iter());
+                guard.extend(found);
             }
         }
 

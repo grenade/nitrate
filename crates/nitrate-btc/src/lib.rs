@@ -68,30 +68,33 @@ pub fn merkle_root_be_from_branch(
     Ok(root_be)
 }
 
+/// Parameters for preparing work from Stratum notify
+pub struct NotifyParams<'a> {
+    pub version_hex_le: &'a str,
+    pub prevhash_hex_le: &'a str,
+    pub coinbase1_hex: &'a str,
+    pub coinbase2_hex: &'a str,
+    pub merkle_branch_hex: &'a [String],
+    pub ntime_hex_le: &'a str,
+    pub nbits_hex_le: &'a str,
+    pub extranonce1: &'a [u8],
+    pub extranonce2: &'a [u8],
+}
+
 /// Prepare midstate/tail/target/header from Stratum notify parts.
 /// All hex inputs are as provided by typical Stratum v1:
 /// - prevhash: 32-byte hash in little-endian hex
 /// - version, ntime, nbits: 4-byte fields in little-endian hex
 /// - coinbase1/2: transaction slices in hex (raw bytes)
 /// - merkle_branch: array of 32-byte hashes in little-endian hex
-pub fn prepare_from_notify_parts(
-    version_hex_le: &str,
-    prevhash_hex_le: &str,
-    coinbase1_hex: &str,
-    coinbase2_hex: &str,
-    merkle_branch_hex: &[String],
-    ntime_hex_le: &str,
-    nbits_hex_le: &str,
-    extranonce1: &[u8],
-    extranonce2: &[u8],
-) -> Result<PreparedWork> {
+pub fn prepare_from_notify_parts(params: NotifyParams) -> Result<PreparedWork> {
     // Parse fixed fields
-    let version = parse_u32_le_hex(version_hex_le)?;
-    let ntime = parse_u32_le_hex(ntime_hex_le)?;
-    let nbits = parse_u32_le_hex(nbits_hex_le)?;
+    let version = parse_u32_le_hex(params.version_hex_le)?;
+    let ntime = parse_u32_le_hex(params.ntime_hex_le)?;
+    let nbits = parse_u32_le_hex(params.nbits_hex_le)?;
 
     // prevhash: provided as little-endian hex, convert to big-endian bytes for header assembly
-    let mut prevhash_le = hex_decode(prevhash_hex_le)?;
+    let mut prevhash_le = hex_decode(params.prevhash_hex_le)?;
     if prevhash_le.len() != 32 {
         return Err(anyhow::anyhow!("prevhash must be 32 bytes"));
     }
@@ -100,9 +103,14 @@ pub fn prepare_from_notify_parts(
     prevhash_be.copy_from_slice(&prevhash_le);
 
     // Coinbase and merkle root
-    let coinbase = build_coinbase_bytes(coinbase1_hex, extranonce1, extranonce2, coinbase2_hex)?;
+    let coinbase = build_coinbase_bytes(
+        params.coinbase1_hex,
+        params.extranonce1,
+        params.extranonce2,
+        params.coinbase2_hex,
+    )?;
     let coinbase_txid_be = double_sha256(&coinbase);
-    let merkle_root_be = merkle_root_be_from_branch(coinbase_txid_be, merkle_branch_hex)?;
+    let merkle_root_be = merkle_root_be_from_branch(coinbase_txid_be, params.merkle_branch_hex)?;
 
     // Assemble header with nonce = 0 (placeholder)
     let header80 = assemble_header(version, prevhash_be, merkle_root_be, ntime, nbits, 0);
@@ -125,7 +133,7 @@ pub fn prepare_from_notify_parts(
 /// Decode hex string into bytes.
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(anyhow::anyhow!("hex string has odd length"));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -200,7 +208,7 @@ pub fn assemble_header(
 /// Compute big-endian 32-byte target from compact nBits.
 pub fn nbits_to_target_be(nbits: u32) -> [u8; 32] {
     let e = ((nbits >> 24) & 0xff) as usize;
-    let m = (nbits & 0x007f_ffff) as u32; // ignore sign bit
+    let m = nbits & 0x007f_ffff; // ignore sign bit
     let mut tgt = [0u8; 32];
 
     if e <= 3 {
