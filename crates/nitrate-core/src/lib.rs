@@ -7,7 +7,9 @@ use std::net::SocketAddr;
 use tokio::signal;
 use tracing::{info, warn};
 
-#[cfg(feature = "gpu-dummy")]
+#[cfg(feature = "gpu-cuda")]
+use nitrate_gpu_cuda::CudaBackend as SelectedBackend;
+#[cfg(all(feature = "gpu-dummy", not(feature = "gpu-cuda")))]
 use nitrate_gpu_dummy::DummyBackend as SelectedBackend;
 
 pub struct Engine<B: GpuBackend + Default> {

@@ -32,7 +32,7 @@ impl StratumClient {
         // - stratum+tcp://host:port  => use_tls = false
         // - stratum+ssl://host:port  => use_tls = true
         // - host:port (no scheme)    => uses cfg.tls to decide
-        let (use_tls, addr, host_for_sni) =
+        let (use_tls, addr, _host_for_sni) =
             if let Some(rest) = cfg.url.strip_prefix("stratum+tcp://") {
                 (
                     false,
@@ -57,7 +57,7 @@ impl StratumClient {
                 )
             };
         info!("connecting to pool at {} (tls={})", addr, use_tls);
-        let tcp = TcpStream::connect(&addr).await?;
+        let _tcp = TcpStream::connect(&addr).await?;
         #[cfg(feature = "tls-rustls")]
         let _maybe_tls = if use_tls {
             // Insecure TLS (testing only), controlled by config flag.
@@ -79,10 +79,10 @@ impl StratumClient {
                 .with_no_client_auth();
 
             let connector = TlsConnector::from(Arc::new(config));
-            let server_name = ServerName::try_from(host_for_sni.clone()).map_err(|_| {
-                anyhow::anyhow!(format!("invalid TLS server name: {}", host_for_sni))
+            let server_name = ServerName::try_from(_host_for_sni.clone()).map_err(|_| {
+                anyhow::anyhow!(format!("invalid TLS server name: {}", _host_for_sni))
             })?;
-            let _tls_stream = connector.connect(server_name, tcp).await?;
+            let _tls_stream = connector.connect(server_name, _tcp).await?;
             Some(())
         } else {
             None

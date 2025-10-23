@@ -1,0 +1,30 @@
+[package]
+name = "nitrate-gpu-cuda"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "CUDA backend for Nitrate GPU miner, using the cust CUDA driver bindings"
+
+[lib]
+name = "nitrate_gpu_cuda"
+path = "src/lib.rs"
+
+[features]
+# Build this crate only when the CUDA backend is desired.
+# Upstream crates (e.g., nitrate-core, nitrate-cli) should gate inclusion of this crate behind their own features.
+default = []
+cuda = ["dep:cust"]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+tracing = "0.1"
+nitrate-gpu-api = { path = "../nitrate-gpu-api" }
+# Use cust for CUDA runtime/driver bindings. Optional so the crate can be present in the workspace
+# without pulling CUDA unless feature `cuda` is enabled by upstream.
+cust = { version = "0.3.2", optional = true }
+
+[package.metadata.docs.rs]
+# Avoid building CUDA in docs.rs
+no-default-features = true
+features = []

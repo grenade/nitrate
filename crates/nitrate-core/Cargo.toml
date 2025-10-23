@@ -14,8 +14,10 @@ nitrate-gpu-dummy = { path = "../nitrate-gpu-dummy", optional = true }
 nitrate-pool = { path = "../nitrate-pool" }
 nitrate-metrics = { path = "../nitrate-metrics" }
 nitrate-config = { path = "../nitrate-config" }
+nitrate-gpu-cuda = { path = "../nitrate-gpu-cuda", optional = true }
 thiserror = "1.0"
 
 [features]
 default = ["gpu-dummy"]
 gpu-dummy = ["dep:nitrate-gpu-dummy"]
+gpu-cuda = ["dep:nitrate-gpu-cuda", "nitrate-gpu-cuda/cuda"]
