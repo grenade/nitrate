@@ -25,9 +25,9 @@ pub struct KernelWork {
     /// Compare directly against `hash_be` using lexicographic comparison (hash <= target).
     pub target_be: [u8; 32],
 
-    /// Raw 12 bytes from the 80-byte block header:
-    /// ntime (u32, little-endian) | nbits (u32, little-endian) | nonce placeholder (u32, little-endian 0).
-    pub header_tail: [u8; 12],
+    /// Raw 16 bytes from the 80-byte block header:
+    /// merkle_root tail (4 bytes as in header order) | ntime (u32 LE) | nbits (u32 LE) | nonce placeholder (u32 LE = 0).
+    pub header_tail: [u8; 16],
 
     /// SHA-256 midstate after hashing header bytes 0..63.
     /// Represented as 8 big-endian u32 words per the SHA-256 specification.
@@ -53,8 +53,8 @@ pub struct FoundNonce {
 /// Endianness conventions:
 /// - `target_be`: 32-byte big-endian target; compare directly with `hash_be`.
 /// - `hash_be`: 32-byte big-endian double-SHA256(header).
-/// - `header_tail`: raw 12 bytes from the 80-byte header:
-///   ntime (u32 LE) | nbits (u32 LE) | nonce placeholder (u32 LE = 0).
+/// - `header_tail`: raw 16 bytes from the 80-byte header:
+///   merkle_root tail (4 bytes as in header order) | ntime (u32 LE) | nbits (u32 LE) | nonce placeholder (u32 LE = 0).
 /// - `midstate`: SHA-256 state after bytes 0..63 of the header, as 8 big-endian u32 words.
 /// - `start_nonce` is inclusive; scan at most `nonce_count` nonces per launch.
 #[async_trait]

@@ -1,5 +1,8 @@
 # Nitrate Agents & Workspace Guide
 
+Note: TLS for Stratum (stratum+ssl) is supported behind the feature flag `tls-rustls` in `nitrate-pool`. Configure via `pool.url = "stratum+ssl://..."` or set `pool.tls = true` (with optional `pool.tls_insecure = true` for testing only).
+
+
 This document explains how the **Nitrate** GPU miner workspace is organized, what each crate is responsible for, and how to wire up the remaining implementation (Stratum v1, Bitcoin header assembly, and real GPU backends). It’s written so a new contributor can land, run the dummy backend, and then replace pieces incrementally.
 
 ---

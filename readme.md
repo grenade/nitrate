@@ -1,6 +1,6 @@
 # Nitrate
 
-Note: TLS is supported. You can use stratum+ssl:// in [pool.url], or set pool.tls=true when no scheme is specified. For testing only, pool.tls_insecure=true disables certificate verification.
+Note: TLS is supported. You can use stratum+ssl:// in [pool.url], or set pool.tls=true when no scheme is specified. For testing only, pool.tls_insecure=true disables certificate verification. These map to configuration keys under [pool]: tls and tls_insecure.
 CI: A GitHub Actions workflow is provided at .github/workflows/ci.yml to run fmt, clippy, tests, and build the CLI with the dummy backend.
 
 Nitrate is a modular, Rust-based GPU miner scaffold focused on Bitcoin (Stratum v1) with a pluggable GPU backend abstraction. The core engine is algorithm-agnostic; Bitcoin-specific logic lives in a separate crate, and GPU details are behind a trait so multiple backends (CUDA/HIP/OpenCL) can be swapped in. A dummy GPU backend is provided so you can run the full stack while wiring up network/protocol and core scheduling.

@@ -23,6 +23,8 @@ impl<B: GpuBackend + Default> Engine<B> {
             url: cfg.pool.url.clone(),
             user: cfg.pool.user.clone(),
             pass: cfg.pool.pass.clone(),
+            tls: cfg.pool.tls,
+            tls_insecure: cfg.pool.tls_insecure,
         })
         .await?;
 
