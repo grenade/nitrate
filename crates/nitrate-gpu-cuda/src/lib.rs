@@ -9,7 +9,7 @@ use tracing::debug;
 #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
 use tracing::warn;
 #[cfg(feature = "cuda")]
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 #[cfg(any(feature = "cuda", feature = "cuda-stub"))]
 include!(concat!(env!("OUT_DIR"), "/kernel_ptx.rs"));
 
@@ -69,13 +69,24 @@ impl GpuBackend for CudaBackend {
             // Get optimal configuration for this GPU
             let config = self.gpu_database.get_config(&name);
             info!(
-                "GPU {}: {} ({} MiB) - using grid={}, block={}, nonces_per_thread={}",
+                "GPU {}: {} ({} MiB) - using grid={}, block={}, nonces_per_thread={}, ring_capacity={}",
                 ordinal,
                 name,
                 memory_mb,
                 config.grid_size,
                 config.block_size,
-                config.nonces_per_thread
+                config.nonces_per_thread,
+                config.ring_capacity
+            );
+
+            // Log expected performance based on configuration
+            let total_threads = config.grid_size * config.block_size;
+            let work_per_kernel = total_threads * config.nonces_per_thread;
+            info!(
+                "  -> Total threads: {}, Work per kernel: {} ({} million nonces)",
+                total_threads,
+                work_per_kernel,
+                work_per_kernel / 1_000_000
             );
             configs.push(config);
 
@@ -133,10 +144,19 @@ impl GpuBackend for CudaBackend {
                 .get(device_index as usize)
                 .cloned()
                 .unwrap_or_else(|| {
-                    debug!("No config for device {}, using defaults", device_index);
+                    warn!("No config for device {} - using defaults! This will severely impact performance!", device_index);
                     GpuConfig::default()
                 })
         };
+
+        debug!(
+            "GPU {} using config: grid={}, block={}, nonces_per_thread={}, ring_capacity={}",
+            device_index,
+            config.grid_size,
+            config.block_size,
+            config.nonces_per_thread,
+            config.ring_capacity
+        );
 
         // Load PTX for the "sha256d" module generated at build time and get the kernel.
         let ptx_bytes = nitrate_cuda_ptx::get_ptx_by_name("sha256d")

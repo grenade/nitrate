@@ -143,9 +143,15 @@ impl<B: GpuBackend + Default> Engine<B> {
 
                 // Create GPU work
                 // Use much larger nonce range for better GPU utilization
-                let total_nonces = 2_000_000_000u32; // 2 billion nonces
+                // RTX 5090s need massive work sizes to stay busy
+                let total_nonces = 4_000_000_000u32; // 4 billion nonces (near u32 max)
                 let num_devices = self.cfg.gpu.devices.len() as u32;
                 let nonces_per_device = total_nonces / num_devices.max(1);
+
+                debug!(
+                    "Distributing {} nonces total, {} per device across {} GPUs",
+                    total_nonces, nonces_per_device, num_devices
+                );
 
                 // Launch work on all configured devices
                 for (idx, &device_id) in self.cfg.gpu.devices.iter().enumerate() {
@@ -158,10 +164,19 @@ impl<B: GpuBackend + Default> Engine<B> {
                         midstate: prepared.midstate,
                     };
 
+                    info!(
+                        "Launching work on GPU {}: start_nonce={}, count={} ({}M)",
+                        device_id,
+                        work.start_nonce,
+                        work.nonce_count,
+                        work.nonce_count / 1_000_000
+                    );
+
                     // Launch on this device
                     if let Err(e) = self.backend.launch(device_id, work.clone()).await {
-                        debug!("launch error on device {}: {}", device_id, e);
+                        warn!("launch error on device {}: {}", device_id, e);
                     } else {
+                        debug!("Successfully launched work on GPU {}", device_id);
                         self.metrics.gpu_launches.inc();
                     }
 
@@ -176,7 +191,12 @@ impl<B: GpuBackend + Default> Engine<B> {
                     let hashrate_hs = (self.total_hashes as f64) / elapsed;
                     let hashrate_ghs = hashrate_hs / 1_000_000_000.0;
                     self.metrics.hashrate_gps.set(hashrate_ghs);
-                    info!("hashrate: {:.2} GH/s", hashrate_ghs);
+                    info!(
+                        "hashrate: {:.2} GH/s (processed {} hashes across {} GPUs)",
+                        hashrate_ghs,
+                        self.total_hashes,
+                        self.cfg.gpu.devices.len()
+                    );
                     self.last_hashrate_update = now;
                     self.total_hashes = 0;
                 }
@@ -190,6 +210,10 @@ impl<B: GpuBackend + Default> Engine<B> {
                             continue;
                         }
                     };
+
+                    if !results.is_empty() {
+                        debug!("GPU {} returned {} candidates", device_id, results.len());
+                    }
 
                     self.metrics.candidates_found.inc_by(results.len() as u64);
                     for candidate in results {
@@ -231,7 +255,8 @@ impl<B: GpuBackend + Default> Engine<B> {
             }
 
             // Brief pause before next work unit
-            sleep(Duration::from_millis(50)).await;
+            // Very short pause for high-end GPUs to keep them fed with work
+            sleep(Duration::from_millis(1)).await;
         }
     }
 

@@ -1,0 +1,77 @@
+# Optimized configuration for high-performance mining with GPU tuning
+
+[pool]
+url = "stratum+tcp://solo.ckpool.org:3333"
+user = "bc1qfxg7az4ly0wwkz56hv9frw7729m8kntaslmfng.quadbrat"
+pass = "x"
+
+[gpu]
+backend = "cuda"
+# Use both GPUs for dual RTX 5090 system
+devices = [0, 1]
+intensity = "high"
+
+# GPU-specific tuning overrides (optional)
+# These override the automatic detection for specific GPUs
+[[gpu.device_overrides]]
+device_index = 0
+# RTX 5090 optimal settings
+grid_size = 2720        # 170 SMs * 16 blocks per SM
+block_size = 512        # Optimal for Blackwell architecture
+nonces_per_thread = 4   # Process 4 nonces per thread
+ring_capacity = 32768   # Larger buffer for high throughput
+
+[[gpu.device_overrides]]
+device_index = 1
+# Second RTX 5090
+grid_size = 2720
+block_size = 512
+nonces_per_thread = 4
+ring_capacity = 32768
+
+# For RTX 4090 systems, use these settings instead:
+# [[gpu.device_overrides]]
+# device_index = 0
+# grid_size = 2048      # 128 SMs * 16 blocks per SM
+# block_size = 512      # Optimal for Ada Lovelace
+# nonces_per_thread = 4
+# ring_capacity = 16384
+
+# For RTX 3090 systems:
+# [[gpu.device_overrides]]
+# device_index = 0
+# grid_size = 1312      # 82 SMs * 16 blocks per SM
+# block_size = 512
+# nonces_per_thread = 2
+# ring_capacity = 16384
+
+# For mixed GPU systems (e.g., RTX 3090 + RTX 3060):
+# [[gpu.device_overrides]]
+# device_index = 0
+# grid_size = 1312      # RTX 3090
+# block_size = 512
+# nonces_per_thread = 2
+#
+# [[gpu.device_overrides]]
+# device_index = 1
+# grid_size = 448       # RTX 3060: 28 SMs * 16 blocks
+# block_size = 256
+# nonces_per_thread = 1
+
+[runtime]
+reconnect_backoff = "1s..30s"
+stale_drop_ms = 500
+telemetry_addr = "0.0.0.0:9100"
+log = "info"
+# Enable test mode for lower difficulty during testing
+# test_mode = true
+# test_difficulty = 0.0001
+
+# Performance tuning
+[runtime.performance]
+# Larger work units for better GPU utilization
+work_size_multiplier = 2.0
+# Poll results more frequently for lower latency
+poll_interval_ms = 25
+# Number of concurrent work items per GPU
+concurrent_work_items = 2

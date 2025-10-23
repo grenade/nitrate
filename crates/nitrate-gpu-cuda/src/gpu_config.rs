@@ -35,13 +35,14 @@ impl GpuDatabase {
         let mut configs = HashMap::new();
 
         // RTX 5090: 21,760 CUDA cores, 170 SMs
+        // Use more aggressive settings for this high-end GPU
         configs.insert(
             "NVIDIA GeForce RTX 5090".to_string(),
             GpuConfig {
-                grid_size: 2720,      // 170 SMs * 16 blocks per SM
+                grid_size: 5440,      // 170 SMs * 32 blocks per SM (double occupancy)
                 block_size: 512,      // Optimal for Blackwell architecture
-                nonces_per_thread: 4, // Process multiple nonces per thread
-                ring_capacity: 32768, // Larger buffer for high throughput
+                nonces_per_thread: 8, // Process 8 nonces per thread for better throughput
+                ring_capacity: 65536, // Very large buffer for massive throughput
             },
         );
 
@@ -153,10 +154,26 @@ impl GpuDatabase {
             return config.clone();
         }
 
-        // Try partial matches for variants (e.g., "RTX 5090 OC" matches "RTX 5090")
-        for (key, config) in &self.configs {
-            if gpu_name.contains(key) || key.contains(gpu_name) {
+        // Try partial matches - check for key GPU model identifiers
+        // Priority order: check for most specific models first
+        let gpu_lower = gpu_name.to_lowercase();
+
+        // Check for RTX 5090 specifically (highest priority)
+        if gpu_lower.contains("5090") || gpu_lower.contains("rtx 5090") {
+            if let Some(config) = self.configs.get("NVIDIA GeForce RTX 5090") {
                 return config.clone();
+            }
+        }
+
+        // Then check other models
+        for (key, config) in &self.configs {
+            let key_lower = key.to_lowercase();
+            // Extract model number (e.g., "5090", "4090", "3090")
+            if let Some(model) = key_lower.split("rtx").nth(1) {
+                let model = model.trim();
+                if gpu_lower.contains(model) {
+                    return config.clone();
+                }
             }
         }
 

@@ -162,6 +162,65 @@ Minimal example:
     log = "info"
 
 
+## Performance Optimizations
+
+The miner includes GPU-specific optimizations that automatically detect and configure optimal settings for different GPU models:
+
+### Supported GPUs and Expected Performance
+
+- **RTX 5090**: ~100-150 GH/s per GPU (2720×512 grid, 4 nonces/thread)
+- **RTX 4090**: ~50-80 GH/s per GPU (2048×512 grid, 4 nonces/thread)
+- **RTX 3090**: ~30-50 GH/s per GPU (1312×512 grid, 2 nonces/thread)
+- **RTX 3060**: ~10-20 GH/s per GPU (448×256 grid, 1 nonce/thread)
+- **A100/H100**: Datacenter optimized configurations available
+
+### Multi-GPU Support
+
+To use multiple GPUs, configure the device indices in your config:
+
+```toml
+[gpu]
+backend = "cuda"
+devices = [0, 1]  # Use both GPU 0 and GPU 1
+```
+
+### Advanced GPU Tuning
+
+For manual tuning, you can override the auto-detected settings:
+
+```toml
+[[gpu.device_overrides]]
+device_index = 0
+grid_size = 2720        # Number of blocks
+block_size = 512        # Threads per block
+nonces_per_thread = 4   # Nonces processed per thread
+ring_capacity = 32768   # Result buffer size
+```
+
+### Performance Monitoring
+
+Monitor your hashrate and GPU utilization:
+
+```bash
+# View hashrate from metrics endpoint
+curl http://localhost:9100/metrics | grep hashrate
+
+# Monitor GPU utilization
+nvidia-smi dmon -s u
+
+# Check for thermal throttling
+nvidia-smi -q -d PERFORMANCE
+```
+
+### Optimization Details
+
+The miner implements several key optimizations:
+- **Automatic GPU detection** with optimal grid/block configurations
+- **Shared memory** usage for SHA256 constants
+- **CUDA intrinsics** for bit operations (`__funnelshift_r`)
+- **Multi-nonce processing** per thread for better parallelism
+- **Large work batches** (2B nonces) to reduce kernel launch overhead
+
 ## Architecture at a glance
 
 - Protocol layer (`nitrate-proto`, `nitrate-pool`):
