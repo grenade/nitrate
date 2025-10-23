@@ -3,6 +3,163 @@ use anyhow::Result;
 use nitrate_utils::be_bytes_to_hex;
 use nitrate_utils::double_sha256;
 
+/// Prepared GPU work derived from Stratum notify fields and extranonces.
+#[derive(Clone, Debug)]
+pub struct PreparedWork {
+    /// SHA-256 state after hashing header bytes 0..63, as 8 big-endian u32 words.
+    pub midstate: [u32; 8],
+    /// Last 16 bytes of the 80-byte header:
+    /// merkle_root tail (4 bytes in header order) | ntime (4 LE) | nbits (4 LE) | nonce placeholder (4 LE = 0)
+    pub tail16: [u8; 16],
+    /// 32-byte big-endian share target (block target if no share target provided).
+    pub target_be: [u8; 32],
+    /// Full 80-byte header with nonce set to 0 (little-endian fields in header as per Bitcoin).
+    pub header80: [u8; 80],
+}
+
+/// Build raw coinbase transaction bytes: coinbase1 || extranonce1 || extranonce2 || coinbase2.
+pub fn build_coinbase_bytes(
+    coinbase1_hex: &str,
+    extranonce1: &[u8],
+    extranonce2: &[u8],
+    coinbase2_hex: &str,
+) -> Result<Vec<u8>> {
+    let mut out = hex_decode(coinbase1_hex)?;
+    out.extend_from_slice(extranonce1);
+    out.extend_from_slice(extranonce2);
+    out.extend_from_slice(&hex_decode(coinbase2_hex)?);
+    Ok(out)
+}
+
+/// Compute merkle root (big-endian) from coinbase txid (big-endian) and merkle branch items
+/// provided as hex (little-endian byte order as in Stratum v1).
+pub fn merkle_root_be_from_branch(
+    coinbase_txid_be: [u8; 32],
+    merkle_branch_hex: &[String],
+) -> Result<[u8; 32]> {
+    // Start from little-endian internal representation for folding.
+    let mut h_le = {
+        let mut t = coinbase_txid_be;
+        t.reverse();
+        t
+    };
+    for br_hex in merkle_branch_hex {
+        let br_le = hex_decode(br_hex)?;
+        // Ensure 32 bytes
+        if br_le.len() != 32 {
+            return Err(anyhow::anyhow!(
+                "merkle branch item must be 32 bytes, got {}",
+                br_le.len()
+            ));
+        }
+        // Concatenate h_le || br_le and hash
+        let mut concat = Vec::with_capacity(64);
+        concat.extend_from_slice(&h_le);
+        concat.extend_from_slice(&br_le);
+        let mut hh = double_sha256(&concat);
+        // Next iteration expects little-endian
+        hh.reverse();
+        h_le.copy_from_slice(&hh);
+    }
+    // Convert final little-endian root to big-endian for header assembly
+    h_le.reverse();
+    let mut root_be = [0u8; 32];
+    root_be.copy_from_slice(&h_le);
+    Ok(root_be)
+}
+
+/// Prepare midstate/tail/target/header from Stratum notify parts.
+/// All hex inputs are as provided by typical Stratum v1:
+/// - prevhash: 32-byte hash in little-endian hex
+/// - version, ntime, nbits: 4-byte fields in little-endian hex
+/// - coinbase1/2: transaction slices in hex (raw bytes)
+/// - merkle_branch: array of 32-byte hashes in little-endian hex
+pub fn prepare_from_notify_parts(
+    version_hex_le: &str,
+    prevhash_hex_le: &str,
+    coinbase1_hex: &str,
+    coinbase2_hex: &str,
+    merkle_branch_hex: &[String],
+    ntime_hex_le: &str,
+    nbits_hex_le: &str,
+    extranonce1: &[u8],
+    extranonce2: &[u8],
+) -> Result<PreparedWork> {
+    // Parse fixed fields
+    let version = parse_u32_le_hex(version_hex_le)?;
+    let ntime = parse_u32_le_hex(ntime_hex_le)?;
+    let nbits = parse_u32_le_hex(nbits_hex_le)?;
+
+    // prevhash: provided as little-endian hex, convert to big-endian bytes for header assembly
+    let mut prevhash_le = hex_decode(prevhash_hex_le)?;
+    if prevhash_le.len() != 32 {
+        return Err(anyhow::anyhow!("prevhash must be 32 bytes"));
+    }
+    prevhash_le.reverse();
+    let mut prevhash_be = [0u8; 32];
+    prevhash_be.copy_from_slice(&prevhash_le);
+
+    // Coinbase and merkle root
+    let coinbase = build_coinbase_bytes(coinbase1_hex, extranonce1, extranonce2, coinbase2_hex)?;
+    let coinbase_txid_be = double_sha256(&coinbase);
+    let merkle_root_be = merkle_root_be_from_branch(coinbase_txid_be, merkle_branch_hex)?;
+
+    // Assemble header with nonce = 0 (placeholder)
+    let header80 = assemble_header(version, prevhash_be, merkle_root_be, ntime, nbits, 0);
+    let mut first64 = [0u8; 64];
+    first64.copy_from_slice(&header80[0..64]);
+    let mut tail16 = [0u8; 16];
+    tail16.copy_from_slice(&header80[64..80]);
+
+    let midstate = sha256_midstate_first64(&first64);
+    let target_be = nbits_to_target_be(nbits);
+
+    Ok(PreparedWork {
+        midstate,
+        tail16,
+        target_be,
+        header80,
+    })
+}
+
+/// Decode hex string into bytes.
+fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return Err(anyhow::anyhow!("hex string has odd length"));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    let from_hex = |c: u8| -> Result<u8> {
+        match c {
+            b'0'..=b'9' => Ok(c - b'0'),
+            b'a'..=b'f' => Ok(10 + (c - b'a')),
+            b'A'..=b'F' => Ok(10 + (c - b'A')),
+            _ => Err(anyhow::anyhow!("invalid hex character")),
+        }
+    };
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let hi = from_hex(bytes[i])?;
+        let lo = from_hex(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+/// Parse a 4-byte little-endian hex string into u32.
+fn parse_u32_le_hex(s: &str) -> Result<u32> {
+    let b = hex_decode(s)?;
+    if b.len() != 4 {
+        return Err(anyhow::anyhow!(
+            "expected 4-byte hex, got {} bytes",
+            b.len()
+        ));
+    }
+    Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 /// Assemble an 80-byte Bitcoin block header from components.
 /// Inputs:
 /// - version: u32 (will be written LE)

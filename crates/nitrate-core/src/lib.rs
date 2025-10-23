@@ -1,10 +1,13 @@
 use anyhow::Result;
 use nitrate_config::AppCfg;
-use nitrate_gpu_api::GpuBackend;
+use nitrate_gpu_api::{GpuBackend, KernelWork};
 use nitrate_metrics::Metrics;
 use nitrate_pool::{PoolConfig, StratumClient};
 use std::net::SocketAddr;
-use tokio::signal;
+use tokio::{
+    signal,
+    time::{sleep, Duration},
+};
 use tracing::{info, warn};
 
 #[cfg(feature = "gpu-cuda")]
@@ -14,9 +17,11 @@ use nitrate_gpu_dummy::DummyBackend as SelectedBackend;
 
 pub struct Engine<B: GpuBackend + Default> {
     cfg: AppCfg,
+    #[allow(dead_code)]
     pool: StratumClient,
     backend: B,
     metrics: Metrics,
+    generation: u64,
 }
 
 impl<B: GpuBackend + Default> Engine<B> {
@@ -36,6 +41,7 @@ impl<B: GpuBackend + Default> Engine<B> {
             pool,
             backend: B::default(),
             metrics,
+            generation: 0,
         })
     }
 
@@ -66,11 +72,31 @@ impl<B: GpuBackend + Default> Engine<B> {
 
     async fn main_loop(&mut self) -> Result<()> {
         loop {
-            if let Some(_job) = self.pool.next_job().await? {
-                // TODO: transform into KernelWork and launch on devices
-                // self.backend.launch(0, work).await?;
+            // Stub work: launch a scan on device 0 with placeholder params.
+            let work = KernelWork {
+                generation: self.generation,
+                start_nonce: 0,
+                nonce_count: 1_000_000, // scan 1M nonces per loop
+                target_be: [0u8; 32],
+                header_tail: [0u8; 16],
+                midstate: [0u32; 8],
+            };
+            self.backend.launch(0, work).await?;
+
+            // Poll and log any candidates
+            let results = self.backend.poll_results(0).await?;
+            if !results.is_empty() {
+                for cand in results {
+                    info!(
+                        "candidate found: device=0 nonce={} hash={:?}",
+                        cand.nonce, cand.hash_be
+                    );
+                }
             }
-            // Poll for results from each device in a real implementation.
+
+            // Advance generation for next loop and avoid busy-spin
+            self.generation = self.generation.wrapping_add(1);
+            sleep(Duration::from_millis(200)).await;
         }
     }
 }
