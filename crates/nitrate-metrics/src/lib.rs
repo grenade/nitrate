@@ -1,8 +1,17 @@
 use anyhow::Result;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server};
+use bytes::Bytes;
+use http::{Request, Response};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::service::Service;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder;
 use prometheus::{Encoder, Gauge, IntCounter, Registry, TextEncoder};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -48,29 +57,35 @@ impl Metrics {
     }
 
     pub async fn serve(&self, addr: SocketAddr) -> Result<JoinHandle<()>> {
-        let registry = self.registry.clone();
-        let make_svc = make_service_fn(move |_| {
-            let registry = registry.clone();
-            async move {
-                Ok::<_, hyper::Error>(service_fn(move |_req: Request<Body>| {
-                    let registry = registry.clone();
-                    async move {
-                        let encoder = TextEncoder::new();
-                        let metric_families = registry.gather();
-                        let mut buffer = Vec::new();
-                        encoder.encode(&metric_families, &mut buffer).unwrap();
-                        Ok::<_, hyper::Error>(Response::new(Body::from(buffer)))
-                    }
-                }))
-            }
-        });
-        let server = Server::bind(&addr).serve(make_svc);
+        let listener = TcpListener::bind(addr).await?;
         info!("metrics listening on http://{addr}/");
+
+        let service = MetricsService {
+            registry: Arc::new(self.registry.clone()),
+        };
+
         let handle = tokio::spawn(async move {
-            if let Err(e) = server.await {
-                eprintln!("metrics server error: {e}");
+            loop {
+                let (stream, _addr) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        eprintln!("accept error: {e}");
+                        continue;
+                    }
+                };
+
+                let io = TokioIo::new(stream);
+                let service = service.clone();
+
+                tokio::spawn(async move {
+                    let builder = Builder::new(TokioExecutor::new());
+                    if let Err(e) = builder.serve_connection(io, service).await {
+                        eprintln!("connection error: {e}");
+                    }
+                });
             }
         });
+
         Ok(handle)
     }
 }
@@ -78,5 +93,28 @@ impl Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Clone)]
+struct MetricsService {
+    registry: Arc<Registry>,
+}
+
+impl Service<Request<Incoming>> for MetricsService {
+    type Response = Response<Full<Bytes>>;
+    type Error = anyhow::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&self, _req: Request<Incoming>) -> Self::Future {
+        let registry = self.registry.clone();
+        Box::pin(async move {
+            let encoder = TextEncoder::new();
+            let metric_families = registry.gather();
+            let mut buffer = Vec::new();
+            encoder.encode(&metric_families, &mut buffer)?;
+            let body = Full::new(Bytes::from(buffer));
+            Ok(Response::new(body))
+        })
     }
 }
