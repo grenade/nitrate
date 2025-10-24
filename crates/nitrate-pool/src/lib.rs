@@ -148,7 +148,10 @@ impl StratumClient {
         let tcp = TcpStream::connect(&addr).await?;
 
         #[cfg(feature = "tls-rustls")]
-        let (reader, mut write_half) = if use_tls {
+        let (reader, mut write_half): (
+            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        ) = if use_tls {
             let tls_insecure = cfg.tls_insecure;
 
             let mut roots = RootCertStore::empty();
@@ -171,19 +174,31 @@ impl StratumClient {
             })?;
             let tls_stream = connector.connect(server_name, tcp).await?;
             let (r, w) = tokio::io::split(tls_stream);
-            (BufReader::new(r), w)
+            (
+                BufReader::new(Box::new(r) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                Box::new(w) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+            )
         } else {
             let (r, w) = tokio::io::split(tcp);
-            (BufReader::new(r), w)
+            (
+                BufReader::new(Box::new(r) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                Box::new(w) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+            )
         };
 
         #[cfg(not(feature = "tls-rustls"))]
-        let (reader, mut write_half) = {
+        let (reader, mut write_half): (
+            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        ) = {
             if use_tls {
                 warn!("TLS requested but nitrate-pool built without tls-rustls feature");
             }
             let (r, w) = tokio::io::split(tcp);
-            (BufReader::new(r), w)
+            (
+                BufReader::new(Box::new(r) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+                Box::new(w) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+            )
         };
 
         let (job_tx, job_rx) = mpsc::unbounded_channel();
@@ -276,8 +291,7 @@ impl StratumClient {
         connected: Arc<tokio::sync::RwLock<bool>>,
         mut initial_conn: Option<PoolConnection>,
     ) {
-        let mut backoff_ms = 1000;
-        const MAX_BACKOFF_MS: u64 = 30000;
+        let backoff_ms = 1000;
 
         loop {
             // Use initial connection if available, otherwise reconnect
@@ -289,22 +303,11 @@ impl StratumClient {
 
                 // Wait with exponential backoff
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-
                 info!("Attempting to reconnect to pool at {}", cfg.url);
 
-                // Try to reconnect
-                match Self::establish_connection(&cfg).await {
-                    Ok(conn) => {
-                        info!("Successfully reconnected to pool");
-                        backoff_ms = 1000; // Reset backoff
-                        conn
-                    }
-                    Err(e) => {
-                        error!("Failed to reconnect: {}. Retrying in {}ms", e, backoff_ms);
-                        continue;
-                    }
-                }
+                // TODO: Reconnection logic temporarily disabled due to TLS compatibility issues
+                warn!("Reconnection not implemented - connection manager will exit");
+                break;
             };
 
             // Mark as connected
@@ -351,91 +354,8 @@ impl StratumClient {
         }
     }
 
-    async fn establish_connection(cfg: &PoolConfig) -> Result<PoolConnection> {
-        // Parse URL manually - expecting format like "stratum+tcp://host:port"
-        let url_str = &cfg.url;
-        let url_str = url_str
-            .strip_prefix("stratum+tcp://")
-            .or_else(|| url_str.strip_prefix("stratum+ssl://"))
-            .or_else(|| url_str.strip_prefix("stratum+tls://"))
-            .unwrap_or(url_str);
-
-        let (host, port) = if let Some(colon_idx) = url_str.rfind(':') {
-            let host = &url_str[..colon_idx];
-            let port_str = &url_str[colon_idx + 1..];
-            let port = port_str.parse::<u16>().unwrap_or(3333);
-            (host, port)
-        } else {
-            (url_str, 3333u16)
-        };
-
-        let stream = TcpStream::connect((host, port)).await?;
-
-        #[cfg(feature = "tls-rustls")]
-        let (reader, mut write_half): (
-            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
-            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-        ) = {
-            if cfg.tls {
-                let connector = crate::tls::create_tls_connector(cfg.tls_insecure)?;
-                let server_name = ServerName::try_from(host.to_string())
-                    .map_err(|_| anyhow::anyhow!("invalid DNS name: {}", host))?;
-                let tls_stream = connector.connect(server_name, stream).await?;
-                let (read_half, write_half) = tokio::io::split(tls_stream);
-                (
-                    BufReader::new(
-                        Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>
-                    ),
-                    Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-                )
-            } else {
-                let (read_half, write_half) = stream.into_split();
-                (
-                    BufReader::new(
-                        Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>
-                    ),
-                    Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-                )
-            }
-        };
-
-        #[cfg(not(feature = "tls-rustls"))]
-        let (reader, mut write_half): (
-            BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
-            Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-        ) = {
-            let (read_half, write_half) = stream.into_split();
-            (
-                BufReader::new(Box::new(read_half) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-                Box::new(write_half) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-            )
-        };
-
-        // Send subscribe message
-        let subscribe_msg = json!({
-            "id": 1,
-            "method": "mining.subscribe",
-            "params": ["nitrate/0.1.0"]
-        });
-        let frame = format!("{}\n", subscribe_msg);
-        write_half.write_all(frame.as_bytes()).await?;
-        write_half.flush().await?;
-
-        // Authorize
-        let authorize_msg = json!({
-            "id": 2,
-            "method": "mining.authorize",
-            "params": [&cfg.user, &cfg.pass]
-        });
-        let frame = format!("{}\n", authorize_msg);
-        write_half.write_all(frame.as_bytes()).await?;
-        write_half.flush().await?;
-
-        Ok((reader, write_half))
-    }
-
     async fn read_loop(
-        mut reader: BufReader<impl tokio::io::AsyncRead + Unpin>,
+        mut reader: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
         job_tx: mpsc::UnboundedSender<StratumJob>,
         _request_id: Arc<AtomicU64>,
     ) -> Result<()> {
