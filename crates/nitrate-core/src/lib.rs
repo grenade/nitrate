@@ -1,7 +1,7 @@
 use anyhow::Result;
 use nitrate_btc::{double_sha256_via_midstate, prepare_from_notify_parts, NotifyParams};
 use nitrate_config::AppCfg;
-use nitrate_gpu_api::{GpuBackend, KernelWork};
+use nitrate_gpu_api::{ConfigurableGpuBackend, KernelWork};
 use nitrate_metrics::Metrics;
 use nitrate_pool::{PoolConfig, Share, StratumClient, StratumJob};
 use std::net::SocketAddr;
@@ -21,7 +21,7 @@ use nitrate_gpu_cuda::CudaBackend as SelectedBackend;
 ))]
 use nitrate_gpu_dummy::DummyBackend as SelectedBackend;
 
-pub struct Engine<B: GpuBackend + Default> {
+pub struct Engine<B: ConfigurableGpuBackend> {
     cfg: AppCfg,
     pool: StratumClient,
     backend: B,
@@ -34,7 +34,7 @@ pub struct Engine<B: GpuBackend + Default> {
     total_hashes: u64,
 }
 
-impl<B: GpuBackend + Default> Engine<B> {
+impl<B: ConfigurableGpuBackend> Engine<B> {
     pub async fn new(cfg: AppCfg) -> Result<Self> {
         let mut pool = StratumClient::connect(PoolConfig {
             url: cfg.pool.url.clone(),
@@ -47,10 +47,32 @@ impl<B: GpuBackend + Default> Engine<B> {
 
         let job_rx = pool.job_rx();
         let metrics = Metrics::new();
+        // Create backend with device overrides from config
+        let backend = if cfg.gpu.device_overrides.is_empty() {
+            debug!("No device overrides configured, using defaults");
+            B::default()
+        } else {
+            debug!(
+                "Applying {} device overrides",
+                cfg.gpu.device_overrides.len()
+            );
+            for override_cfg in &cfg.gpu.device_overrides {
+                debug!(
+                    "Device {}: grid={}, block={}, nonces_per_thread={}, ring_capacity={}",
+                    override_cfg.device_index,
+                    override_cfg.grid_size,
+                    override_cfg.block_size,
+                    override_cfg.nonces_per_thread,
+                    override_cfg.ring_capacity
+                );
+            }
+            B::new_with_config(cfg.gpu.device_overrides.clone())
+        };
+
         Ok(Self {
             cfg,
             pool,
-            backend: B::default(),
+            backend,
             metrics,
             generation: 0,
             job_rx,

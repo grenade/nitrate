@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use nitrate_config::DeviceOverride;
 
 #[derive(Clone, Debug)]
 pub struct DeviceInfo {
@@ -62,4 +63,9 @@ pub trait GpuBackend: Send + Sync {
     async fn enumerate(&self) -> Result<Vec<DeviceInfo>>;
     async fn launch(&self, _device_index: u32, _work: KernelWork) -> Result<()>;
     async fn poll_results(&self, _device_index: u32) -> Result<Vec<FoundNonce>>;
+}
+
+/// Trait for backends that can be configured with device overrides
+pub trait ConfigurableGpuBackend: GpuBackend + Default {
+    fn new_with_config(device_overrides: Vec<DeviceOverride>) -> Self;
 }

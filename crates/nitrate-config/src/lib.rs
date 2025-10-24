@@ -22,6 +22,18 @@ pub struct PoolCfg {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceOverride {
+    pub device_index: u32,
+    pub grid_size: u32,
+    pub block_size: u32,
+    pub nonces_per_thread: u32,
+    #[serde(default = "default_ring_capacity")]
+    pub ring_capacity: u32,
+    #[serde(default)]
+    pub use_shared_memory: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GpuCfg {
     #[serde(default = "default_backend")]
     pub backend: String, // "dummy" | "cuda" | "hip" | "opencl"
@@ -29,6 +41,8 @@ pub struct GpuCfg {
     pub devices: Vec<u32>, // device indexes
     #[serde(default = "default_intensity")]
     pub intensity: String, // "auto"
+    #[serde(default)]
+    pub device_overrides: Vec<DeviceOverride>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +59,18 @@ pub struct RuntimeCfg {
     pub test_mode: bool, // Enable artificially easy difficulty for testing
     #[serde(default = "default_test_difficulty")]
     pub test_difficulty: f64, // Override difficulty in test mode
+    #[serde(default)]
+    pub performance: Option<PerformanceCfg>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PerformanceCfg {
+    #[serde(default = "default_work_size_multiplier")]
+    pub work_size_multiplier: f64,
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_concurrent_work_items")]
+    pub concurrent_work_items: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +100,22 @@ fn default_telemetry() -> String {
 }
 fn default_test_difficulty() -> f64 {
     0.00001 // Very easy difficulty for testing
+}
+
+fn default_ring_capacity() -> u32 {
+    8192
+}
+
+fn default_work_size_multiplier() -> f64 {
+    1.0
+}
+
+fn default_poll_interval_ms() -> u64 {
+    50
+}
+
+fn default_concurrent_work_items() -> u32 {
+    1
 }
 
 pub fn load_from_path(path: &str) -> Result<AppCfg, ConfigError> {

@@ -3,7 +3,8 @@
 use anyhow::bail;
 use anyhow::Result;
 use async_trait::async_trait;
-use nitrate_gpu_api::{DeviceInfo, FoundNonce, GpuBackend, KernelWork};
+use nitrate_config::DeviceOverride;
+use nitrate_gpu_api::{ConfigurableGpuBackend, DeviceInfo, FoundNonce, GpuBackend, KernelWork};
 #[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
 use tracing::debug;
 #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
@@ -34,7 +35,7 @@ unsafe impl cust::memory::DeviceCopy for DeviceCandidate {}
 ///
 /// - With `cuda` feature: performs CUDA driver init and basic device enumeration.
 /// - Without `cuda` feature: compiles a stub that returns errors on use.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CudaBackend {
     #[cfg(feature = "cuda")]
     _marker: std::marker::PhantomData<()>,
@@ -44,6 +45,71 @@ pub struct CudaBackend {
     gpu_configs: std::sync::Arc<std::sync::Mutex<Vec<GpuConfig>>>,
     #[cfg(feature = "cuda")]
     gpu_database: GpuDatabase,
+}
+
+impl CudaBackend {
+    #[cfg(feature = "cuda")]
+    pub fn new(device_overrides: Vec<DeviceOverride>) -> Self {
+        let backend = Self {
+            _marker: std::marker::PhantomData,
+            last_candidates: std::sync::OnceLock::new(),
+            gpu_configs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            gpu_database: GpuDatabase::new(),
+        };
+
+        // Store device overrides for later application during enumerate()
+        if !device_overrides.is_empty() {
+            let mut configs = std::collections::HashMap::new();
+            for override_cfg in device_overrides {
+                let gpu_config = GpuConfig {
+                    grid_size: override_cfg.grid_size,
+                    block_size: override_cfg.block_size,
+                    nonces_per_thread: override_cfg.nonces_per_thread,
+                    ring_capacity: override_cfg.ring_capacity,
+                };
+                configs.insert(override_cfg.device_index, gpu_config);
+            }
+            // Convert HashMap to Vec for storage, we'll apply during enumerate()
+            if let Ok(mut guard) = backend.gpu_configs.lock() {
+                // We'll store the overrides as a marker - actual application happens in enumerate()
+                guard.clear();
+                for (device_idx, config) in configs {
+                    // Pad vector to accommodate this device index
+                    while guard.len() <= device_idx as usize {
+                        guard.push(GpuConfig::default());
+                    }
+                    guard[device_idx as usize] = config;
+                }
+            }
+        }
+        backend
+    }
+
+    #[cfg(all(feature = "cuda-stub", not(feature = "cuda")))]
+    pub fn new(_device_overrides: Vec<DeviceOverride>) -> Self {
+        Self::default()
+    }
+
+    #[cfg(not(any(feature = "cuda", feature = "cuda-stub")))]
+    pub fn new(_device_overrides: Vec<DeviceOverride>) -> Self {
+        Self::default()
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for CudaBackend {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "cuda")]
+            _marker: std::marker::PhantomData,
+            #[cfg(feature = "cuda")]
+            last_candidates: std::sync::OnceLock::new(),
+            #[cfg(feature = "cuda")]
+            gpu_configs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            #[cfg(feature = "cuda")]
+            gpu_database: GpuDatabase::new(),
+        }
+    }
 }
 
 #[async_trait]
@@ -91,8 +157,39 @@ impl GpuBackend for CudaBackend {
                 max_registers_per_block
             );
 
-            // Get optimal configuration for this GPU
-            let config = self.gpu_database.get_config(&name);
+            // Get configuration - check if we have device overrides first
+            let config = {
+                let configs = self
+                    .gpu_configs
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Failed to lock configs: {}", e))?;
+
+                if !configs.is_empty() && (ordinal as usize) < configs.len() {
+                    let override_config = &configs[ordinal as usize];
+                    // Check if this is a meaningful override (not just defaults)
+                    let default_config = GpuConfig::default();
+                    if override_config.grid_size != default_config.grid_size
+                        || override_config.block_size != default_config.block_size
+                        || override_config.nonces_per_thread != default_config.nonces_per_thread
+                        || override_config.ring_capacity != default_config.ring_capacity
+                    {
+                        info!(
+                            "GPU {}: Using device override configuration: grid={}, block={}, nonces_per_thread={}",
+                            ordinal,
+                            override_config.grid_size,
+                            override_config.block_size,
+                            override_config.nonces_per_thread
+                        );
+                        override_config.clone()
+                    } else {
+                        // No meaningful override, use database config
+                        self.gpu_database.get_config(&name)
+                    }
+                } else {
+                    // No override for this device, use database config
+                    self.gpu_database.get_config(&name)
+                }
+            };
 
             // Validate configuration against device limits
             if config.block_size > max_threads_per_block {
@@ -337,5 +434,138 @@ impl GpuBackend for CudaBackend {
     async fn poll_results(&self, device_index: u32) -> Result<Vec<FoundNonce>> {
         let _ = device_index; // silence unused warning
         bail!("CudaBackend::poll_results called but crate built without `cuda` or `cuda-stub` features");
+    }
+}
+
+impl ConfigurableGpuBackend for CudaBackend {
+    fn new_with_config(device_overrides: Vec<DeviceOverride>) -> Self {
+        Self::new(device_overrides)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nitrate_config::DeviceOverride;
+
+    #[test]
+    fn test_cuda_backend_default() {
+        let _backend = CudaBackend::default();
+        // Should create backend with empty configs
+        #[cfg(feature = "cuda")]
+        {
+            let configs = _backend.gpu_configs.lock().unwrap();
+            assert!(configs.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_cuda_backend_with_device_overrides() {
+        let overrides = vec![
+            DeviceOverride {
+                device_index: 0,
+                grid_size: 1360,
+                block_size: 256,
+                nonces_per_thread: 1,
+                ring_capacity: 32768,
+                use_shared_memory: true,
+            },
+            DeviceOverride {
+                device_index: 1,
+                grid_size: 680,
+                block_size: 512,
+                nonces_per_thread: 2,
+                ring_capacity: 16384,
+                use_shared_memory: false,
+            },
+        ];
+
+        let _backend = CudaBackend::new(overrides.clone());
+
+        #[cfg(feature = "cuda")]
+        {
+            let configs = _backend.gpu_configs.lock().unwrap();
+            assert_eq!(configs.len(), 2);
+
+            // Check device 0 config
+            assert_eq!(configs[0].grid_size, 1360);
+            assert_eq!(configs[0].block_size, 256);
+            assert_eq!(configs[0].nonces_per_thread, 1);
+            assert_eq!(configs[0].ring_capacity, 32768);
+
+            // Check device 1 config
+            assert_eq!(configs[1].grid_size, 680);
+            assert_eq!(configs[1].block_size, 512);
+            assert_eq!(configs[1].nonces_per_thread, 2);
+            assert_eq!(configs[1].ring_capacity, 16384);
+        }
+    }
+
+    #[test]
+    fn test_configurable_gpu_backend_trait() {
+        let overrides = vec![DeviceOverride {
+            device_index: 0,
+            grid_size: 2720,
+            block_size: 512,
+            nonces_per_thread: 4,
+            ring_capacity: 32768,
+            use_shared_memory: true,
+        }];
+
+        let _backend = CudaBackend::new_with_config(overrides);
+
+        #[cfg(feature = "cuda")]
+        {
+            let configs = _backend.gpu_configs.lock().unwrap();
+            assert_eq!(configs.len(), 1);
+            assert_eq!(configs[0].grid_size, 2720);
+            assert_eq!(configs[0].block_size, 512);
+            assert_eq!(configs[0].nonces_per_thread, 4);
+            assert_eq!(configs[0].ring_capacity, 32768);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_gpu_database_rtx5090_config() {
+        let db = GpuDatabase::new();
+        let config = db.get_config("NVIDIA GeForce RTX 5090");
+
+        // Verify the default RTX 5090 config that was causing issues
+        assert_eq!(config.grid_size, 2720);
+        assert_eq!(config.block_size, 512);
+        assert_eq!(config.nonces_per_thread, 4);
+        assert_eq!(config.ring_capacity, 32768);
+    }
+
+    #[test]
+    fn test_device_override_sparse_indices() {
+        // Test that we can override device 2 without overriding devices 0 and 1
+        let overrides = vec![DeviceOverride {
+            device_index: 2,
+            grid_size: 1000,
+            block_size: 128,
+            nonces_per_thread: 8,
+            ring_capacity: 4096,
+            use_shared_memory: false,
+        }];
+
+        let _backend = CudaBackend::new(overrides);
+
+        #[cfg(feature = "cuda")]
+        {
+            let configs = _backend.gpu_configs.lock().unwrap();
+            assert_eq!(configs.len(), 3); // Should pad to include device 2
+
+            // Devices 0 and 1 should have defaults
+            assert_eq!(configs[0].grid_size, GpuConfig::default().grid_size);
+            assert_eq!(configs[1].grid_size, GpuConfig::default().grid_size);
+
+            // Device 2 should have the override
+            assert_eq!(configs[2].grid_size, 1000);
+            assert_eq!(configs[2].block_size, 128);
+            assert_eq!(configs[2].nonces_per_thread, 8);
+            assert_eq!(configs[2].ring_capacity, 4096);
+        }
     }
 }

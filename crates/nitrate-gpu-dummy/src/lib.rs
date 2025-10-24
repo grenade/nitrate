@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use nitrate_gpu_api::{DeviceInfo, FoundNonce, GpuBackend, KernelWork};
+use nitrate_config::DeviceOverride;
+use nitrate_gpu_api::{ConfigurableGpuBackend, DeviceInfo, FoundNonce, GpuBackend, KernelWork};
 use tokio::time::{sleep, Duration};
 use tracing::debug;
 
@@ -33,5 +34,11 @@ impl GpuBackend for DummyBackend {
         sleep(Duration::from_millis(500)).await;
         // No results are produced; by construction this drops all generations (stale or current).
         Ok(vec![])
+    }
+}
+
+impl ConfigurableGpuBackend for DummyBackend {
+    fn new_with_config(_device_overrides: Vec<DeviceOverride>) -> Self {
+        Self
     }
 }

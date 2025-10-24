@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+nitrate-config = { path = "../nitrate-config" }
 nitrate-gpu-api = { path = "../nitrate-gpu-api", features = ["dummy"] }
 tokio = { version = "1.39", features = ["time", "rt"] }
 tracing = "0.1"

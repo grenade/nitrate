@@ -21,6 +21,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 tracing = "0.1"
 nitrate-gpu-api = { path = "../nitrate-gpu-api" }
+nitrate-config = { path = "../nitrate-config" }
 # Use cust for CUDA runtime/driver bindings. Optional so the crate can be present in the workspace
 # without pulling CUDA unless feature `cuda` is enabled by upstream.
 cust = { version = "0.3.2", optional = true }
